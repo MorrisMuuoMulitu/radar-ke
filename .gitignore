@@ -1,4 +1,4 @@
-__pycache__
+__pycache__/
 *.pth
 # *.nii.gz
 # *.csv
@@ -11,3 +11,18 @@ bert-base-uncased
 merlin_labels.json
 merlin_report.json
 .vscode
+
+# local python env
+.venv/
+*.pyc
+*.pyo
+
+# runtime artefacts
+*.log
+results/.~lock*
+webapp/uploads/
+webapp/outputs/
+
+# large / external data (fetch separately, never commit)
+data/merlin_data_train_full/
+.DS_Store

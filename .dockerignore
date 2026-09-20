@@ -1,0 +1,8 @@
+.venv/
+.git/
+ckpt/*.pth
+data/
+results/
+.cache/
+__pycache__/
+*.log
