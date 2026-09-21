@@ -61,5 +61,12 @@ class ReviewTests(unittest.TestCase):
         self.assertIn('Simple cyst favored.', report)
         self.assertIn('qualified radiologist review', report)
 
+    def test_window_presets_map_hu_to_display_range(self):
+        image = review.apply_window([-1000, 40, 400], center=40, width=400)
+        self.assertEqual(float(image[0]), 0.0)
+        self.assertAlmostEqual(float(image[1]), 0.5, places=2)
+        self.assertEqual(float(image[2]), 1.0)
+        self.assertIn('Abdomen', review.WINDOW_PRESETS)
+
 if __name__ == '__main__':
     unittest.main()

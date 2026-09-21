@@ -197,6 +197,7 @@ class DataFolder(Dataset):
         image = img_resized
         image[image > 400] = 400
         image[image < -300] = -300
+        display_hu = image.clone()
         image = (image - image.min()) / (image.max() - image.min() + 1e-8)
         img = image
 
@@ -223,12 +224,19 @@ class DataFolder(Dataset):
             min_dhw[1]: max_dhw[1],
             min_dhw[2]: max_dhw[2]
         ]
+        cropped_display_hu = display_hu[
+            :,
+            min_dhw[0]: max_dhw[0],
+            min_dhw[1]: max_dhw[1],
+            min_dhw[2]: max_dhw[2]
+        ]
         crop_shape_dhw = tuple(cropped_image.shape[1:])
 
         # pad data to [96, 256, 384] if smaller
         data["image"] = cropped_image
         data_pad = self.pad_func(data)
         data = data_pad
+        display_hu = self.pad_func({'image': cropped_display_hu})['image'].as_tensor()
 
         file_name = image_path.split('/')[-1]
         patient_id = file_name.split('_')[0]
@@ -240,6 +248,7 @@ class DataFolder(Dataset):
             'patient_id': patient_id,
             'test_organ_names': test_organ_names,
             'letter': 'None',
+            'display_hu': display_hu,
         }
         return data['image'].as_tensor(), self.test_items, meta_info
 
@@ -574,6 +583,7 @@ def evaluate(pad_func, model, img_dir, save_dir, save_tag, collect_cases=False, 
             np.savez_compressed(
                 case_path,
                 image=image.detach().cpu().numpy().astype(np.float32),
+                display_hu=meta_info['display_hu'].detach().cpu().numpy().astype(np.float32),
                 mask=stitched_mask.detach().cpu().numpy().astype(np.uint8),
                 columns=np.array(columns[1:]),
                 scores=score_vec,
@@ -689,6 +699,4 @@ def run_case(nifti_path, out_dir):
         'case_path': case_path,
         'scores': scores,
     }
-
-
 

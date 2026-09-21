@@ -21,6 +21,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / 'webapp'))
 sys.path.insert(0, str(REPO_ROOT / 'RADAR_inference'))
 from review import (
+    WINDOW_PRESETS,
+    apply_window,
     build_case_record,
     clear_case,
     filter_findings,
@@ -75,8 +77,6 @@ def read_example():
     source = REPO_ROOT / 'data/demo_cases/AC423ccbe.nii.gz'
     image = np.asarray(nib.load(str(source)).dataobj, dtype=np.float32)
     image = np.transpose(image, (2, 1, 0))
-    image = np.clip(image, -300, 400)
-    image = (image - image.min()) / (image.max() - image.min() + 1e-8)
     csv = REPO_ROOT / 'results/RADAR_infer_results_demo_8gb.csv'
     if not csv.exists():
         csv = REPO_ROOT / 'results/RADAR_infer_results_demo.csv'
@@ -84,18 +84,20 @@ def read_example():
     if str(row['file_name']) != source.name:
         raise ValueError('Example scores do not match the bundled volume.')
     return {'file_name': source.name, 'scores': row.drop('file_name').to_dict(),
-            'image': image, 'mask': None, 'example': True}
+            'image': image, 'mask': None, 'example': True, 'display_mode': 'hu'}
 
 
 def case_arrays(result):
     if result.get('example'):
-        return result['image'], None
+        return result['image'], None, result.get('display_mode', 'normalized')
     # Keep private volumes in session memory only, never in a shared data cache.
     if '_image' not in result:
         with np.load(result['case_path'], allow_pickle=False) as data:
-            result['_image'] = np.squeeze(data['image']).astype(np.float32)
+            source = data['display_hu'] if 'display_hu' in data.files else data['image']
+            result['_image'] = np.squeeze(source).astype(np.float32)
             result['_mask'] = np.squeeze(data['mask']).astype(np.uint8)
-    return result['_image'], result['_mask']
+            result['_display_mode'] = 'hu' if 'display_hu' in data.files else 'normalized'
+    return result['_image'], result['_mask'], result.get('_display_mode', 'normalized')
 
 
 def convert_dicom(path, work):
@@ -147,9 +149,12 @@ def start_case(upload):
         status.update(label='Scan ready for review', state='complete', expanded=False)
 
 
-def slice_rgb(image, mask, axis, index, brightness, contrast, overlay, opacity, selected):
+def slice_rgb(image, mask, axis, index, display_mode, window_level, window_width, overlay, opacity, selected):
     gray = np.take(image, index, axis=axis)
-    gray = np.clip((gray - 0.5) * contrast + 0.5 + brightness, 0, 1)
+    if display_mode == 'hu':
+        gray = apply_window(gray, window_level, window_width)
+    else:
+        gray = np.clip(gray, 0, 1)
     rgb = np.repeat(gray[..., None], 3, axis=-1)
     if overlay and mask is not None:
         labels = np.take(mask, index, axis=axis)
@@ -160,14 +165,18 @@ def slice_rgb(image, mask, axis, index, brightness, contrast, overlay, opacity, 
 
 
 def show_viewer(result):
-    image, mask = case_arrays(result)
+    image, mask, display_mode = case_arrays(result)
     with st.container(border=True):
         st.subheader('Volume explorer')
-        st.caption('Orientation is not validated for diagnostic use. Display adjustments are not HU windows.')
+        st.caption('Orientation is not validated for diagnostic use. Window presets use HU when available.')
         a, b, c = st.columns([1.1, 1, 1])
         mode = a.radio('Layout', ['Three planes', 'Single plane'], horizontal=True)
-        brightness = b.slider('Brightness', -0.4, 0.4, 0.0, 0.05)
-        contrast = c.slider('Contrast', 0.5, 3.0, 1.0, 0.1)
+        preset_name = b.selectbox('Window preset', list(WINDOW_PRESETS.keys()))
+        preset = WINDOW_PRESETS[preset_name]
+        window_level = c.number_input('Window level', value=int(preset['center']), step=10)
+        window_width = c.number_input('Window width', min_value=1, value=int(preset['width']), step=10)
+        if display_mode != 'hu':
+            st.caption('This case uses normalized display data from an older model output. Reanalyze the scan to enable true HU windowing.')
         present = [] if mask is None else [int(i) for i in np.unique(mask) if i > 0]
         selected = 0
         overlay = False
@@ -193,8 +202,15 @@ def show_viewer(result):
                 key = f'slice_{axis}'
                 if key not in st.session_state or st.session_state[key] >= image.shape[axis]:
                     st.session_state[key] = image.shape[axis] // 2
+                nav_prev, nav_next = st.columns(2)
+                if nav_prev.button(f'Previous {names[axis].lower()} slice', key=f'prev_{axis}', width='stretch'):
+                    st.session_state[key] = max(0, st.session_state[key] - 1)
+                    st.rerun()
+                if nav_next.button(f'Next {names[axis].lower()} slice', key=f'next_{axis}', width='stretch'):
+                    st.session_state[key] = min(image.shape[axis] - 1, st.session_state[key] + 1)
+                    st.rerun()
                 index = st.slider(f'{names[axis]} slice', 0, image.shape[axis] - 1, key=key)
-                pixels = slice_rgb(image, mask, axis, index, brightness, contrast, overlay, opacity, selected)
+                pixels = slice_rgb(image, mask, axis, index, display_mode, window_level, window_width, overlay, opacity, selected)
                 st.image(pixels, width='stretch')
                 st.caption(f'Slice {index + 1} of {image.shape[axis]}')
                 buf = io.BytesIO()

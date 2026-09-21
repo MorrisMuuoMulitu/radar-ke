@@ -5,7 +5,23 @@ import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+import numpy as np
 import pandas as pd
+
+WINDOW_PRESETS = {
+    'Abdomen': {'center': 60, 'width': 400},
+    'Liver': {'center': 70, 'width': 150},
+    'Soft tissue': {'center': 40, 'width': 350},
+    'Lung': {'center': -600, 'width': 1500},
+    'Bone': {'center': 300, 'width': 1500},
+}
+
+
+def apply_window(image, center, width):
+    values = np.asarray(image, dtype=np.float32)
+    lower = center - width / 2
+    upper = center + width / 2
+    return np.clip((values - lower) / max(upper - lower, 1), 0, 1)
 
 
 def score_table(scores):

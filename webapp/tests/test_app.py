@@ -22,6 +22,13 @@ class WorkspaceTests(unittest.TestCase):
                 'scores': {'原文 (Liver_Cyst)': 0.8, '原文 (Kidney_Cyst)': None}}
             app.run()
             self.assertFalse(app.exception)
+            next(s for s in app.selectbox if s.label == 'Window preset').set_value('Bone').run()
+            axial_slider = next(s for s in app.slider if s.label == 'Axial slice')
+            self.assertEqual(axial_slider.value, 5)
+            next(b for b in app.button if b.label == 'Next axial slice').click().run()
+            self.assertEqual(app.session_state['slice_0'], 6)
+            next(b for b in app.button if b.label == 'Previous axial slice').click().run()
+            self.assertEqual(app.session_state['slice_0'], 5)
             next(s for s in app.selectbox if s.label == 'Highlight anatomy').set_value(21).run()
             next(b for b in app.button if b.label == 'Center on selected anatomy').click().run()
             self.assertEqual(app.session_state['slice_0'], 3)
