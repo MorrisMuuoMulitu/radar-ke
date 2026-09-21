@@ -1,4 +1,5 @@
 """Exercise the review workflow with a small synthetic model-output volume."""
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -34,6 +35,28 @@ class WorkspaceTests(unittest.TestCase):
             self.assertFalse(case.exists())
             self.assertNotIn('result', app.session_state)
             self.assertFalse(app.exception)
+
+    def test_review_can_save_history_and_open_saved_report(self):
+        with tempfile.TemporaryDirectory() as history:
+            os.environ['RADAR_CASE_HISTORY_DIR'] = history
+            try:
+                app = AppTest.from_file(str(APP), default_timeout=30)
+                app.session_state['result'] = {'file_name': 'history_case.nii.gz', 'example': True,
+                    'image': np.ones((4, 5, 6), dtype=np.float32) * 0.5, 'mask': None,
+                    'scores': {'原文 (Liver_Cyst)': 0.8}}
+                app.run()
+                next(t for t in app.text_area if t.label == 'Reviewer notes').set_value('Follow up with prior study.').run()
+                next(s for s in app.multiselect if s.label == 'Shortlist findings for follow-up').set_value(['原文 (Liver_Cyst)']).run()
+                next(b for b in app.button if b.label == 'Save case to history').click().run()
+                self.assertTrue(list(Path(history).glob('*.json')))
+                app.run()
+                self.assertTrue(any('history_case.nii.gz' in option for s in app.selectbox if s.label == 'Saved cases' for option in s.options))
+                next(b for b in app.button if b.label == 'Open saved review').click().run()
+                self.assertTrue(app.session_state['result']['history_only'])
+                self.assertTrue(any('Structured report draft' in h.value for h in app.subheader))
+                self.assertFalse(app.exception)
+            finally:
+                os.environ.pop('RADAR_CASE_HISTORY_DIR', None)
 
 if __name__ == '__main__':
     unittest.main()

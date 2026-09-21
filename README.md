@@ -13,7 +13,8 @@ This repository keeps the original RADAR training, preprocessing, and inference 
 - Low-VRAM inference window selection for 8 GB GPUs.
 - Three-plane CT viewer with segmentation overlay controls.
 - Finding table with search, anatomy filtering, thresholding, and CSV export.
-- Review notebook with shortlist, status, notes, JSON export, and full score export.
+- Review notebook with shortlist, status, notes, JSON export, report text export, and full score export.
+- Local case-history snapshots for saved review metadata.
 
 This is a research and product prototype. It is not a certified medical device and must not be used as an autonomous diagnosis system. Outputs require qualified radiologist review.
 
@@ -82,7 +83,7 @@ Then open:
 http://127.0.0.1:8501
 ```
 
-The app processes uploads locally. Temporary uploaded case files are written under the system temp directory with a `radar_web_` prefix and can be cleared from the sidebar.
+The app processes uploads locally. Temporary uploaded case files are written under the system temp directory with a `radar_web_` prefix and can be cleared from the sidebar. Saved case-history snapshots store review metadata, notes, shortlist, and scores under `~/.radar_ke/cases` by default; they do not archive CT pixel data.
 
 ## Docker
 

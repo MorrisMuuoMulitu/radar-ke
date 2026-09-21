@@ -20,7 +20,16 @@ from matplotlib import colormaps
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / 'webapp'))
 sys.path.insert(0, str(REPO_ROOT / 'RADAR_inference'))
-from review import score_table, filter_findings, clear_case
+from review import (
+    build_case_record,
+    clear_case,
+    filter_findings,
+    list_case_records,
+    load_case_record,
+    save_case_record,
+    score_table,
+    structured_report,
+)
 os.environ.setdefault('MODEL_ROOT', str(REPO_ROOT / 'ckpt'))
 os.environ.setdefault('CONFIGS_ROOT', str(REPO_ROOT / 'ckpt'))
 os.environ.setdefault('HF_HOME', str(Path(tempfile.gettempdir()) / 'radar_hf'))
@@ -210,6 +219,29 @@ with st.sidebar:
             st.session_state.result = dict(example)
         except Exception as exc:
             st.error(f'Example unavailable: {exc}')
+    history = list_case_records()
+    if history:
+        st.divider()
+        st.subheader('Case history')
+        history_labels = {
+            f'{item["file_name"]} • {item["status"]} • {item["saved_at"][:10]}': item['case_id']
+            for item in history
+        }
+        selected_history = st.selectbox('Saved cases', list(history_labels.keys()))
+        if st.button('Open saved review', width='stretch'):
+            record = load_case_record(history_labels[selected_history])
+            clear_case(st.session_state)
+            st.session_state.result = {
+                'file_name': record.get('file_name', 'saved_case'),
+                'scores': record.get('scores', {}),
+                'example': record.get('example', False),
+                'history_only': True,
+                'saved_record': record,
+            }
+            st.session_state.review_status = record.get('status', 'Not started')
+            st.session_state.review_flags = record.get('shortlist', [])
+            st.session_state.review_notes = record.get('notes', '')
+            st.rerun()
     st.divider()
     st.subheader('Compute')
     if gpu[0] == 'CPU':
@@ -260,7 +292,10 @@ else:
     st.caption('Scores compare predefined positive and negative prompts. They are not calibrated disease probabilities.')
     viewer, findings, review_tab = st.tabs(['Scan explorer', 'Findings', 'Review & export'])
     with viewer:
-        show_viewer(result)
+        if result.get('history_only'):
+            st.info('This saved review contains notes, scores, and shortlist metadata. Reopen or reanalyze the CT scan to view image slices.')
+        else:
+            show_viewer(result)
     with findings:
         st.subheader('Finding explorer')
         a, b = st.columns([1.4, 1])
@@ -290,13 +325,23 @@ else:
         st.multiselect('Shortlist findings for follow-up', rows.key.tolist(), format_func=lambda x: labels.get(x, x), key='review_flags')
         st.selectbox('Review status', ['Not started', 'In progress', 'Reviewed'], key='review_status')
         st.text_area('Reviewer notes', placeholder='Record observations, questions, and follow-up considerations…', height=180, key='review_notes')
-        export = {'case': result['file_name'], 'example': example, 'exported_at': datetime.now(timezone.utc).isoformat(),
-                  'status': st.session_state.review_status, 'shortlist': st.session_state.review_flags,
-                  'notes': st.session_state.review_notes,
-                  'scores': {k: None if pd.isna(v) else float(v) for k, v in result['scores'].items()},
-                  'notice': 'Research use only. Model scores are not calibrated disease probabilities.'}
-        a, b = st.columns(2)
+        export = build_case_record(
+            result,
+            st.session_state.review_status,
+            st.session_state.review_flags,
+            st.session_state.review_notes,
+            saved_at=datetime.now(timezone.utc).isoformat(),
+        )
+        report = structured_report(export)
+        st.subheader('Structured report draft')
+        st.text_area('Draft report', value=report, height=260)
+        if st.button('Save case to history', width='stretch'):
+            saved = save_case_record(export)
+            st.success(f'Saved review for {saved["file_name"]}.')
+            st.rerun()
+        a, b, c = st.columns(3)
         a.download_button('Download review JSON', json.dumps(export, indent=2, ensure_ascii=False), 'radar_review.json', 'application/json', width='stretch')
-        b.download_button('Download all finding scores', rows.drop(columns='key').to_csv(index=False).encode('utf-8-sig'), 'radar_all_findings.csv', 'text/csv', width='stretch')
+        b.download_button('Download report TXT', report, 'radar_structured_report.txt', 'text/plain', width='stretch')
+        c.download_button('Download all finding scores', rows.drop(columns='key').to_csv(index=False).encode('utf-8-sig'), 'radar_all_findings.csv', 'text/csv', width='stretch')
 
 st.markdown('<div class="research-note">Research use only. Not a medical device or a diagnosis. Outputs require qualified review. Trained for contrast-enhanced abdominal CT.</div>', unsafe_allow_html=True)

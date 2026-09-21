@@ -30,5 +30,36 @@ class ReviewTests(unittest.TestCase):
         self.assertTrue(rows['score'].isna().all())
         self.assertEqual(len(review.filter_findings(rows, '', [], 0, True)), 0)
 
+    def test_case_history_round_trip_saves_review_without_volume_pixels(self):
+        with tempfile.TemporaryDirectory() as folder:
+            record = review.build_case_record(
+                {'file_name': 'case.nii.gz', 'scores': {'原文 (Liver_Cyst)': 0.8}, 'case_path': '/tmp/private.npz'},
+                status='Reviewed',
+                shortlist=['原文 (Liver_Cyst)'],
+                notes='Correlate with prior imaging.',
+            )
+            saved = review.save_case_record(record, Path(folder))
+            loaded = review.load_case_record(saved['case_id'], Path(folder))
+            cases = review.list_case_records(Path(folder))
+            self.assertEqual(loaded['file_name'], 'case.nii.gz')
+            self.assertEqual(loaded['status'], 'Reviewed')
+            self.assertNotIn('case_path', loaded)
+            self.assertNotIn('image', loaded)
+            self.assertEqual(cases[0]['case_id'], saved['case_id'])
+
+    def test_structured_report_includes_shortlist_scores_notes_and_notice(self):
+        record = review.build_case_record(
+            {'file_name': 'case.nii.gz', 'scores': {'原文 (Liver_Cyst)': 0.8, '原文 (Kidney_Cyst)': 0.2}},
+            status='Reviewed',
+            shortlist=['原文 (Liver_Cyst)'],
+            notes='Simple cyst favored.',
+        )
+        report = review.structured_report(record)
+        self.assertIn('Case: case.nii.gz', report)
+        self.assertIn('Review status: Reviewed', report)
+        self.assertIn('Liver / Cyst: 0.800', report)
+        self.assertIn('Simple cyst favored.', report)
+        self.assertIn('qualified radiologist review', report)
+
 if __name__ == '__main__':
     unittest.main()
