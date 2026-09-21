@@ -1,39 +1,33 @@
-"""RADAR web app (Streamlit).
-
-Upload an abdominal CT (.nii/.nii.gz or a .zip of DICOM), run the RADAR
-vision-language model, and browse ranked findings with a slice viewer.
-
-Run from the repo root:
-    streamlit run webapp/app.py
-"""
+"""RADAR research review workspace. Run: streamlit run webapp/app.py"""
 import io
 import os
-import shutil
-import subprocess
 import sys
+import json
+import time
 import tempfile
+import subprocess
 import zipfile
+from pathlib import Path
+from html import escape
+from datetime import datetime, timezone
 
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
+from PIL import Image
+from matplotlib import colormaps
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(REPO_ROOT, 'RADAR_inference'))
-
-os.environ.setdefault('MODEL_ROOT', os.path.join(REPO_ROOT, 'ckpt'))
-os.environ.setdefault('CONFIGS_ROOT', os.path.join(REPO_ROOT, 'ckpt'))
-os.environ.setdefault('HF_HOME', os.path.join(tempfile.gettempdir(), 'radar_hf'))
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / 'webapp'))
+sys.path.insert(0, str(REPO_ROOT / 'RADAR_inference'))
+from review import score_table, filter_findings, clear_case
+os.environ.setdefault('MODEL_ROOT', str(REPO_ROOT / 'ckpt'))
+os.environ.setdefault('CONFIGS_ROOT', str(REPO_ROOT / 'ckpt'))
+os.environ.setdefault('HF_HOME', str(Path(tempfile.gettempdir()) / 'radar_hf'))
 os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
 
-import torch  # noqa: E402
-from inference_service import get_model, run_case  # noqa: E402
-
-st.set_page_config(page_title='RADAR — Abdominal CT Findings', layout='wide')
-
+st.set_page_config(page_title='RADAR | CT review workspace', page_icon='◉', layout='wide')
+st.markdown((REPO_ROOT / 'webapp/style.css').read_text(), unsafe_allow_html=True)
 ORGAN_INDEX = {
     1: 'Adrenal gland', 2: 'Aorta', 3: 'Erector spinae', 4: 'Brain',
     5: 'Clavicle', 6: 'Large bowel', 7: 'Duodenum', 8: 'Esophagus',
@@ -49,171 +43,260 @@ ORGAN_INDEX = {
 
 
 @st.cache_resource(show_spinner=False)
-def load_model_cached():
-    return get_model()
+def hardware():
+    import torch
+    if not torch.cuda.is_available():
+        return ('CPU', 0.0)
+    props = torch.cuda.get_device_properties(0)
+    if props.total_memory < 10e9:
+        os.environ.setdefault('ROI_SIZE', '64,192,288')
+    return props.name, props.total_memory / 1e9
 
 
-def pick_roi_size():
-    """Paper default on big GPUs, smaller windows on <=10GB cards."""
-    if os.environ.get('ROI_SIZE'):
-        return os.environ['ROI_SIZE']
+@st.cache_resource(show_spinner=False)
+def inference_resources():
+    import threading
+    from inference_service import get_model
+    return get_model(), threading.Lock()
+
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def read_example():
+    import nibabel as nib
+    source = REPO_ROOT / 'data/demo_cases/AC423ccbe.nii.gz'
+    image = np.asarray(nib.load(str(source)).dataobj, dtype=np.float32)
+    image = np.transpose(image, (2, 1, 0))
+    image = np.clip(image, -300, 400)
+    image = (image - image.min()) / (image.max() - image.min() + 1e-8)
+    csv = REPO_ROOT / 'results/RADAR_infer_results_demo_8gb.csv'
+    if not csv.exists():
+        csv = REPO_ROOT / 'results/RADAR_infer_results_demo.csv'
+    row = pd.read_csv(csv).iloc[0]
+    if str(row['file_name']) != source.name:
+        raise ValueError('Example scores do not match the bundled volume.')
+    return {'file_name': source.name, 'scores': row.drop('file_name').to_dict(),
+            'image': image, 'mask': None, 'example': True}
+
+
+def case_arrays(result):
+    if result.get('example'):
+        return result['image'], None
+    # Keep private volumes in session memory only, never in a shared data cache.
+    if '_image' not in result:
+        with np.load(result['case_path'], allow_pickle=False) as data:
+            result['_image'] = np.squeeze(data['image']).astype(np.float32)
+            result['_mask'] = np.squeeze(data['mask']).astype(np.uint8)
+    return result['_image'], result['_mask']
+
+
+def convert_dicom(path, work):
+    import shutil
+    if not shutil.which('dcm2niix'):
+        raise RuntimeError('DICOM conversion requires dcm2niix. Convert to NIfTI or install dcm2niix.')
+    target = work / 'dicom'
+    target.mkdir()
+    with zipfile.ZipFile(path) as archive:
+        if sum(i.file_size for i in archive.infolist()) > 8 * 1024**3:
+            raise ValueError('The uncompressed archive exceeds the 8 GB limit.')
+        for member in archive.infolist():
+            if not (target / member.filename).resolve().is_relative_to(target.resolve()):
+                raise ValueError('The archive contains an invalid file path.')
+        archive.extractall(target)
+    output = work / 'converted'
+    output.mkdir()
+    proc = subprocess.run(['dcm2niix', '-o', str(output), '-f', 'scan', '-z', 'y', str(target)],
+                          capture_output=True, text=True, timeout=600)
+    files = list(output.glob('*.nii.gz'))
+    if proc.returncode or len(files) != 1:
+        raise RuntimeError(f'Conversion produced {len(files)} volumes. Upload one CT series as NIfTI. {proc.stderr[-300:]}')
+    return files[0]
+
+
+def start_case(upload):
+    clear_case(st.session_state)
+    work = Path(tempfile.mkdtemp(prefix='radar_web_'))
+    st.session_state.work_dir = str(work)
+    path = work / Path(upload.name).name
+    path.write_bytes(upload.getbuffer())
+    if not path.name.lower().endswith(('.nii', '.nii.gz', '.zip')):
+        raise ValueError('Choose a .nii, .nii.gz, or DICOM .zip file.')
+    started = time.monotonic()
+    with st.status('Preparing your scan…', expanded=True) as status:
+        if path.suffix.lower() == '.zip':
+            st.write('Converting the DICOM series…')
+            path = convert_dicom(path, work)
+        st.write('Loading the model…' + (' Runs on CPU (no GPU) — analysis will be slow.' if hardware()[0] == 'CPU' else ' Waiting for the GPU…'))
+        _, lock = inference_resources()
+        from inference_service import run_case
+        with lock:
+            st.write('Segmenting anatomy and scoring findings. This can take several minutes.')
+            if hardware()[0] == 'CPU':
+                st.warning('CPU mode: a full analysis of a large scan can take tens of minutes to hours. Keep this page open.')
+            result = run_case(str(path), str(work / 'case'))
+        result['elapsed'] = time.monotonic() - started
+        st.session_state.result = result
+        status.update(label='Scan ready for review', state='complete', expanded=False)
+
+
+def slice_rgb(image, mask, axis, index, brightness, contrast, overlay, opacity, selected):
+    gray = np.take(image, index, axis=axis)
+    gray = np.clip((gray - 0.5) * contrast + 0.5 + brightness, 0, 1)
+    rgb = np.repeat(gray[..., None], 3, axis=-1)
+    if overlay and mask is not None:
+        labels = np.take(mask, index, axis=axis)
+        keep = labels > 0 if selected == 0 else labels == selected
+        colors = colormaps['turbo'](labels / 36)[..., :3]
+        rgb[keep] = rgb[keep] * (1 - opacity) + colors[keep] * opacity
+    return (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
+
+
+def show_viewer(result):
+    image, mask = case_arrays(result)
+    with st.container(border=True):
+        st.subheader('Volume explorer')
+        st.caption('Orientation is not validated for diagnostic use. Display adjustments are not HU windows.')
+        a, b, c = st.columns([1.1, 1, 1])
+        mode = a.radio('Layout', ['Three planes', 'Single plane'], horizontal=True)
+        brightness = b.slider('Brightness', -0.4, 0.4, 0.0, 0.05)
+        contrast = c.slider('Contrast', 0.5, 3.0, 1.0, 0.1)
+        present = [] if mask is None else [int(i) for i in np.unique(mask) if i > 0]
+        selected = 0
+        overlay = False
+        opacity = 0.45
+        if mask is not None:
+            a, b, c = st.columns([1.3, 1, 1])
+            selected = a.selectbox('Highlight anatomy', [0] + present,
+                format_func=lambda x: 'All segmented anatomy' if x == 0 else ORGAN_INDEX.get(x, str(x)))
+            overlay = b.checkbox('Show organ overlay', value=True)
+            opacity = c.slider('Overlay opacity', 0.1, 0.9, 0.45, 0.05)
+            if selected and st.button('Center on selected anatomy'):
+                center = np.median(np.argwhere(mask == selected), axis=0).astype(int)
+                for axis in range(3):
+                    st.session_state[f'slice_{axis}'] = int(center[axis])
+        else:
+            st.caption('Example uses saved scores and the bundled scan. Segmentation overlays become available after running inference.')
+        names = ['Axial', 'Coronal', 'Sagittal']
+        axes = list(range(3)) if mode == 'Three planes' else [names.index(st.radio('Plane', names, horizontal=True))]
+        columns = st.columns(len(axes))
+        for col, axis in zip(columns, axes):
+            with col:
+                st.markdown(f'**{names[axis]}**')
+                key = f'slice_{axis}'
+                if key not in st.session_state or st.session_state[key] >= image.shape[axis]:
+                    st.session_state[key] = image.shape[axis] // 2
+                index = st.slider(f'{names[axis]} slice', 0, image.shape[axis] - 1, key=key)
+                pixels = slice_rgb(image, mask, axis, index, brightness, contrast, overlay, opacity, selected)
+                st.image(pixels, width='stretch')
+                st.caption(f'Slice {index + 1} of {image.shape[axis]}')
+                buf = io.BytesIO()
+                Image.fromarray(pixels).save(buf, format='PNG')
+                st.download_button('Save slice PNG', buf.getvalue(), f'{names[axis].lower()}_{index + 1}.png',
+                                   'image/png', key=f'png_{axis}')
+        st.caption(f'Volume dimensions: {image.shape[0]} × {image.shape[1]} × {image.shape[2]} voxels' +
+                   (f' • {len(present)} segmented structures' if mask is not None else ''))
+
+
+gpu = hardware()
+with st.sidebar:
+    st.markdown('''<div class="brand"><svg width="42" height="42" viewBox="0 0 42 42" fill="none"><circle cx="21" cy="21" r="18" stroke="#64c6cc" stroke-width="2"/><circle cx="21" cy="21" r="10" stroke="#64c6cc"/><path d="M21 3v36M3 21h36" stroke="#64c6cc"/><circle cx="21" cy="21" r="3" fill="#fff"/></svg><div><strong>RADAR</strong><small>Abdominal CT workspace</small></div></div>''', unsafe_allow_html=True)
+    st.subheader('Case workspace')
+    st.caption('Import a scan or explore the included example.')
+    upload = st.file_uploader('Import CT scan', type=['nii', 'gz', 'zip'], help='One NIfTI volume or a ZIP containing one DICOM series.')
+    run = st.button('Analyze scan', type='primary', width='stretch', disabled=upload is None)
+    if st.button('Open example case', width='stretch'):
+        try:
+            example = read_example()
+            clear_case(st.session_state)
+            st.session_state.result = dict(example)
+        except Exception as exc:
+            st.error(f'Example unavailable: {exc}')
+    st.divider()
+    st.subheader('Compute')
+    if gpu[0] == 'CPU':
+        st.caption('No CUDA GPU detected — analysis runs on CPU and is slow.')
+        st.caption('Expect tens of minutes to hours per scan. The example case loads instantly.')
+    else:
+        st.caption(f'{gpu[0]}\n\n{gpu[1]:.1f} GB total GPU memory')
+        st.caption('Compact inference windows' if gpu[1] < 10 else 'Standard inference windows')
+    if st.session_state.get('result') is not None:
+        st.divider()
+        if st.button('Clear case and delete uploads', width='stretch'):
+            clear_case(st.session_state)
+            st.rerun()
+    st.caption('Uploads are processed locally. Clear the case to remove its temporary files. Closing the browser alone does not delete files.')
+
+st.markdown('<div class="workspace-header"><div><h1>RADAR</h1><p>Abdominal CT review workspace</p></div><span class="status-chip">Research workspace</span></div>', unsafe_allow_html=True)
+if run:
     try:
-        total_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
-        if total_gb < 10:
-            os.environ['ROI_SIZE'] = '64,192,288'
-            return '64,192,288 (low-VRAM mode)'
-    except Exception:
-        pass
-    return '96,256,384 (paper default)'
+        start_case(upload)
+    except Exception as exc:
+        st.error(f'Analysis could not complete: {exc}')
+        st.info('Check the scan format and GPU memory, then try again. The example remains available.')
 
-
-def convert_dicom_zip(zip_path, work_dir):
-    """Unzip DICOMs and convert to a single .nii.gz via dcm2niix."""
-    dcm_dir = os.path.join(work_dir, 'dicom')
-    os.makedirs(dcm_dir, exist_ok=True)
-    with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(dcm_dir)
-    out_dir = os.path.join(work_dir, 'nifti')
-    os.makedirs(out_dir, exist_ok=True)
-    proc = subprocess.run(
-        ['dcm2niix', '-o', out_dir, '-f', 'scan', '-z', 'y', dcm_dir],
-        capture_output=True, text=True, timeout=600,
-    )
-    produced = sorted(f for f in os.listdir(out_dir) if f.endswith('.nii.gz'))
-    if len(produced) != 1:
-        raise RuntimeError(
-            f'dcm2niix produced {len(produced)} volumes (expected exactly 1). '
-            f'Stdout: {proc.stdout[-2000:]} Stderr: {proc.stderr[-2000:]}'
-        )
-    return os.path.join(out_dir, produced[0])
-
-
-def render_slice(image, mask, axis, index, show_overlay, opacity):
-    sl_img = np.take(image, index, axis=axis)
-    sl_mask = np.take(mask, index, axis=axis)
-    if axis == 0:
-        sl_img, sl_mask = sl_img.T, sl_mask.T
-    fig, ax = plt.subplots(figsize=(7, 7))
-    ax.imshow(sl_img, cmap='gray', aspect='auto')
-    if show_overlay:
-        masked = np.ma.masked_where(sl_mask == 0, sl_mask)
-        ax.imshow(masked, cmap='tab20', alpha=opacity, vmin=0, vmax=36,
-                  aspect='auto', interpolation='nearest')
-    ax.axis('off')
-    fig.tight_layout(pad=0)
-    return fig
-
-
-# ------------------------------------------------------------------ sidebar
-st.sidebar.title('Settings')
-threshold = st.sidebar.slider('Score threshold', 0.0, 1.0, 0.5, 0.05)
-search = st.sidebar.text_input('Filter findings (text)', '')
-show_overlay = st.sidebar.checkbox('Organ mask overlay', value=True)
-opacity = st.sidebar.slider('Overlay opacity', 0.1, 1.0, 0.5, 0.05)
-
-st.title('RADAR — Abdominal CT Findings')
-st.warning(
-    '**Research use only — not a medical device and not a diagnosis.** '
-    'Output must be reviewed by a qualified radiologist. Model covers 146 '
-    'fixed findings and was trained on contrast-enhanced abdominal CT.'
-)
-st.caption('Repo: CC BY-NC-SA 4.0 (non-commercial). Uploaded scans stay on this '
-           'machine and are deleted when you upload a new case or clear the session.')
-
-if not torch.cuda.is_available():
-    st.error('No CUDA GPU detected. RADAR inference requires a GPU.')
-    st.stop()
-
-with st.spinner('Loading RADAR model (once, ~1–2 min)…'):
-    try:
-        load_model_cached()
-    except Exception as e:
-        st.error(f'Model failed to load: {e}')
-        st.stop()
-st.sidebar.success(f"Model ready · window {pick_roi_size()}")
-
-# ------------------------------------------------------------------- upload
-uploaded = st.file_uploader(
-    'Upload a scan: contrast-enhanced abdominal CT as .nii/.nii.gz, or a .zip of DICOM',
-    type=['nii', 'gz', 'zip'],
-)
-if st.sidebar.button('Delete my data'):
-    for key in ('result', 'work_dir'):
-        st.session_state.pop(key, None)
-    st.sidebar.success('Session data cleared.')
-
-if uploaded is not None and st.button('Run inference', type='primary'):
-    work_dir = tempfile.mkdtemp(prefix='radar_web_')
-    old = st.session_state.pop('work_dir', None)
-    if old and os.path.isdir(old):
-        shutil.rmtree(old, ignore_errors=True)
-    st.session_state['work_dir'] = work_dir
-    up_path = os.path.join(work_dir, uploaded.name)
-    with open(up_path, 'wb') as f:
-        f.write(uploaded.getbuffer())
-    try:
-        with st.status('Processing…', expanded=True) as status:
-            if up_path.endswith('.zip'):
-                if shutil.which('dcm2niix') is None:
-                    raise RuntimeError('dcm2niix is not installed; cannot convert DICOM.')
-                st.write('Converting DICOM → NIfTI…')
-                nifti_path = convert_dicom_zip(up_path, work_dir)
-            elif up_path.endswith(('.nii.gz', '.nii')):
-                nifti_path = up_path
-            else:
-                raise RuntimeError('Unsupported file type. Upload .nii/.nii.gz or a DICOM .zip.')
-            st.write(f'Running RADAR on {os.path.basename(nifti_path)}…')
-            result = run_case(nifti_path, os.path.join(work_dir, 'case'))
-            st.session_state['result'] = result
-            status.update(label='Done', state='complete')
-    except Exception as e:
-        st.error(f'Failed: {e}')
-
-# ------------------------------------------------------------------ results
 result = st.session_state.get('result')
 if result is None:
-    st.info('Upload a scan and press **Run inference**.')
-    st.stop()
+    st.markdown('<div class="welcome"><h2>A closer look at every scan.</h2><p>Bring anatomy and model findings into one review surface. Inspect three planes, focus on an organ, and capture the findings that deserve a closer look.</p></div>', unsafe_allow_html=True)
+    a, b, c = st.columns(3)
+    with a:
+        st.subheader('Explore the volume')
+        st.write('Navigate axial, coronal, and sagittal views with independent slice and display controls.')
+    with b:
+        st.subheader('Find what matters')
+        st.write('Search 146 finding scores, filter by anatomy, and build a shortlist for review.')
+    with c:
+        st.subheader('Keep the evidence')
+        st.write('Export scores, save individual slices, and download your notes with a structured review.')
+    st.info('Choose “Open example case” in the sidebar to explore immediately, or import a CT scan to run the model.')
+else:
+    rows = score_table(result['scores'])
+    example = result.get('example', False)
+    detail = 'Bundled example • Previously computed model scores' if example else 'Local analysis • Model results ready'
+    st.markdown(f'<div class="case-strip"><strong>{escape(result["file_name"])}</strong><small>{detail}</small></div>', unsafe_allow_html=True)
+    a, b, c, d = st.columns(4)
+    a.metric('Scored findings', f'{rows.score.notna().sum()} / {len(rows)}')
+    b.metric('Anatomical groups', rows.organ.nunique())
+    c.metric('Highest model score', f'{rows.score.max():.3f}' if rows.score.notna().any() else 'Unavailable')
+    d.metric('Review status', st.session_state.get('review_status', 'Not started'))
+    st.caption('Scores compare predefined positive and negative prompts. They are not calibrated disease probabilities.')
+    viewer, findings, review_tab = st.tabs(['Scan explorer', 'Findings', 'Review & export'])
+    with viewer:
+        show_viewer(result)
+    with findings:
+        st.subheader('Finding explorer')
+        a, b = st.columns([1.4, 1])
+        query = a.text_input('Search findings', placeholder='Try liver, cyst, or calcification…')
+        organs = b.multiselect('Filter by anatomy', sorted(rows.organ.unique()))
+        a, b, c = st.columns([1, 1, 1])
+        threshold = a.slider('Model score threshold', 0.0, 1.0, 0.5, 0.05)
+        above = b.checkbox('Only show scores above threshold')
+        order = c.selectbox('Sort by', ['Highest score', 'Lowest score', 'Anatomy'])
+        filtered = filter_findings(rows, query, organs, threshold, above)
+        if order == 'Lowest score':
+            filtered = filtered.sort_values('score', na_position='last')
+        elif order == 'Anatomy':
+            filtered = filtered.sort_values(['organ', 'finding'])
+        st.caption(f'{len(filtered)} matching findings • {int((rows.score >= threshold).sum())} total at or above {threshold:.2f} • Missing predictions remain blank')
+        if filtered.empty:
+            st.info('No findings match these filters. Try a different term, remove an anatomy filter, or lower the threshold.')
+        else:
+            st.dataframe(filtered[['organ', 'finding', 'score']], hide_index=True, width='stretch',
+                column_config={'organ': 'Anatomy', 'finding': 'Finding',
+                               'score': st.column_config.ProgressColumn('Model score', min_value=0, max_value=1, format='%.3f')}, height=520)
+        st.download_button('Export filtered findings', filtered.drop(columns='key').to_csv(index=False).encode('utf-8-sig'), 'radar_filtered_findings.csv', 'text/csv')
+    with review_tab:
+        st.subheader('Review notebook')
+        st.caption('Your selections and notes stay with this case for the current session. Download them before clearing the case.')
+        labels = dict(zip(rows.key, rows.organ + ' / ' + rows.finding))
+        st.multiselect('Shortlist findings for follow-up', rows.key.tolist(), format_func=lambda x: labels.get(x, x), key='review_flags')
+        st.selectbox('Review status', ['Not started', 'In progress', 'Reviewed'], key='review_status')
+        st.text_area('Reviewer notes', placeholder='Record observations, questions, and follow-up considerations…', height=180, key='review_notes')
+        export = {'case': result['file_name'], 'example': example, 'exported_at': datetime.now(timezone.utc).isoformat(),
+                  'status': st.session_state.review_status, 'shortlist': st.session_state.review_flags,
+                  'notes': st.session_state.review_notes,
+                  'scores': {k: None if pd.isna(v) else float(v) for k, v in result['scores'].items()},
+                  'notice': 'Research use only. Model scores are not calibrated disease probabilities.'}
+        a, b = st.columns(2)
+        a.download_button('Download review JSON', json.dumps(export, indent=2, ensure_ascii=False), 'radar_review.json', 'application/json', width='stretch')
+        b.download_button('Download all finding scores', rows.drop(columns='key').to_csv(index=False).encode('utf-8-sig'), 'radar_all_findings.csv', 'text/csv', width='stretch')
 
-scores = {k: v for k, v in result['scores'].items()}
-rows = [{'finding': k, 'score': (v if v is not None else float('nan'))}
-        for k, v in scores.items()]
-df = pd.DataFrame(rows).sort_values('score', ascending=False)
-if search:
-    df = df[df['finding'].str.contains(search, case=False, na=False)]
-df_hi = df[df['score'] >= threshold]
-
-c1, c2, c3 = st.columns(3)
-c1.metric('Findings scored', len(df))
-c2.metric(f'≥ {threshold:.2f}', int(df_hi.shape[0]))
-top = df.iloc[0]
-c3.metric('Top finding', f"{top['score']:.3f}", top['finding'][:40])
-
-st.subheader(f'Ranked findings — {result["file_name"]}')
-st.dataframe(
-    df.assign(score=df['score'].map(lambda x: f'{x:.4f}' if pd.notna(x) else '—')),
-    use_container_width=True, hide_index=True,
-)
-csv_buf = io.StringIO()
-pd.DataFrame([{'file_name': result['file_name'], **scores}]).to_csv(
-    csv_buf, index=False, encoding='utf-8-sig')
-st.download_button('Download CSV', csv_buf.getvalue(),
-                   file_name=f"RADAR_{result['file_name']}.csv", mime='text/csv')
-
-# -------------------------------------------------------------------- viewer
-st.subheader('Slice viewer (model view — resampled, not diagnostic quality)')
-data = np.load(result['case_path'])
-image = np.squeeze(data['image']).astype(np.float32)
-mask = np.squeeze(data['mask']).astype(np.uint8)
-present = [int(i) for i in np.unique(mask) if i != 0]
-st.caption('Organs segmented in this scan: ' +
-           (', '.join(f'{i} ({ORGAN_INDEX.get(i, "?")})' for i in present)
-            if present else 'none'))
-
-axis_names = {'Axial (D)': 0, 'Coronal (H)': 1, 'Sagittal (W)': 2}
-axis_label = st.radio('Plane', list(axis_names), horizontal=True)
-axis = axis_names[axis_label]
-idx = st.slider('Slice', 0, image.shape[axis] - 1, image.shape[axis] // 2)
-fig = render_slice(image, mask, axis, idx, show_overlay, opacity)
-st.pyplot(fig, use_container_width=True)
-plt.close(fig)
+st.markdown('<div class="research-note">Research use only. Not a medical device or a diagnosis. Outputs require qualified review. Trained for contrast-enhanced abdominal CT.</div>', unsafe_allow_html=True)

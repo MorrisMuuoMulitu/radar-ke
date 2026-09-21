@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir -r requirements.txt "numpy<2"
 COPY RADAR_train RADAR_train
 COPY RADAR_inference RADAR_inference
 COPY webapp webapp
+COPY .streamlit .streamlit
 COPY download_scripts download_scripts
 
 # Checkpoints + BERT dirs are large: mount them, do not bake in.

@@ -61,6 +61,11 @@ def masks_to_boxes_3d(masks):
 def collate_fn(batch):
     return batch[0]
 
+def _infer_device():
+    """Return cuda when a GPU is available, otherwise cpu (CPU fallback mode)."""
+    return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
 @torch.no_grad()
 def all_gather(data):
     world_size = dist.get_world_size()
@@ -381,7 +386,7 @@ class RADAR(nn.Module):
                     if item_organ_name != organ_name:
                         continue
 
-                    text_feat = text_feat_dict[item]
+                    text_feat = text_feat_dict[item].to(images.device)
 
                     logits = image_feat @ text_feat.t() / self.temp
                     probs = logits.softmax(-1)
@@ -421,8 +426,8 @@ def evaluate(pad_func, model, img_dir, save_dir, save_tag, collect_cases=False, 
     results = []
     organ_status = {}
 
-    # load pos/neg ensembled prompt embeddings
-    text_feat_dict = torch.load(os.path.join(model_root, 'infer_text_embedding_radar.pt'))
+    # load pos/neg ensembled prompt embeddings (CPU tensors; moved per-device later)
+    text_feat_dict = torch.load(os.path.join(model_root, 'infer_text_embedding_radar.pt'), map_location='cpu')
     organ_feat_dict = {}
     save_path = os.path.join(save_dir, f'RADAR_infer_results_{save_tag}.csv')
     os.makedirs(save_dir, exist_ok=True)
@@ -440,7 +445,7 @@ def evaluate(pad_func, model, img_dir, save_dir, save_tag, collect_cases=False, 
         fid = meta_info['file_name']
         organ_feat_dict[fid] = {}
 
-        image = image[None].cuda()
+        image = image[None].to(_infer_device())
 
         test_organs = meta_info['test_organ_names']
 
@@ -468,7 +473,7 @@ def evaluate(pad_func, model, img_dir, save_dir, save_tag, collect_cases=False, 
                 for idx in slice_range
             ]
             
-            window_patches = torch.cat([image[win_slice] for win_slice in unravel_slice]).cuda()
+            window_patches = torch.cat([image[win_slice] for win_slice in unravel_slice]).to(_infer_device())
 
             organ_logits, pred_window_seg_prob = model.forward_test_win(
                 window_patches, 
@@ -491,7 +496,7 @@ def evaluate(pad_func, model, img_dir, save_dir, save_tag, collect_cases=False, 
         # Avoid division by zero by ensuring count_map is at least 1 everywhere
         count_map = torch.clamp(count_map, min=1)
         stitched_mask = full_mask / count_map  # argmax
-        stitched_mask = stitched_mask.argmax(1).unsqueeze(0).cuda()
+        stitched_mask = stitched_mask.argmax(1).unsqueeze(0).to(_infer_device())
         del full_mask, count_map
         torch.cuda.empty_cache()
     
@@ -613,9 +618,9 @@ def initialize():
     msg = model.load_state_dict(ckpt['model'], strict=False)
 
     model.eval()
-    model.cuda()
+    model.to(_infer_device())
 
-    print('\n--> Initialize done')
+    print(f'\n--> Initialize done (device: {_infer_device()})')
 
     return pad_func, model
 
@@ -645,8 +650,6 @@ def get_model():
     """Load (once) and return the (pad_func, model) pair."""
     global _MODEL_CACHE
     if _MODEL_CACHE is None:
-        if not torch.cuda.is_available():
-            raise RuntimeError('RADAR inference requires a CUDA GPU.')
         _MODEL_CACHE = initialize()
     return _MODEL_CACHE
 
