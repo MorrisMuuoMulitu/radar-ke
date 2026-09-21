@@ -1,22 +1,37 @@
-# RADAR: An Expert-Level Generalist AI for Abdominal CT Diagnosis
+# RADAR Kenya Review Workspace
 
-[![Paper](https://img.shields.io/badge/Science-Paper-2B6CB0?logo=google-scholar&logoColor=white)](https://www.science.org/doi/10.1126/science.aec6129)
-[![GitHub](https://img.shields.io/badge/GitHub-Code-B85C38?logo=github&logoColor=white)](https://github.com/alibaba-damo-academy/damo-radar)
-[![Zenodo](https://img.shields.io/badge/Zenodo-Code-0F766E?logo=zenodo&logoColor=white)](https://zenodo.org/records/21271172)
-[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-Models%26Data-71813F?logo=huggingface&logoColor=white)](https://huggingface.co/radar-generalist)
-[![License](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-7C3F58?logo=creativecommons&logoColor=white)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
+RADAR Kenya is a local review workspace for contrast-enhanced abdominal CT. It builds on the upstream RADAR research code from Alibaba DAMO Academy and adds a Streamlit interface for radiologist-centered scan review, model finding scores, segmentation overlays, notes, and exports.
 
-RADAR is a generalist vision-language model trained on over 400,000 contrast-enhanced abdominal CT examinations with 15 million anatomy-aware image–text pairs, learning directly from clinical reports without manual annotation. RADAR provides a scalable and versatile framework for radiology AI, demonstrating expert-level performance across both routine and complex clinical tasks.
+This repository keeps the original RADAR training, preprocessing, and inference code available while adding a practical web app in `webapp/`.
 
-<p align="center">
-  <img src="docs/radar_fig0.png" alt="RADAR Overview" width="90%">
-</p>
+## Current Status
 
----
+- Local Streamlit app for CT upload and review.
+- NIfTI upload support (`.nii`, `.nii.gz`).
+- DICOM zip upload support through `dcm2niix`.
+- GPU-backed RADAR inference when checkpoints are available.
+- Low-VRAM inference window selection for 8 GB GPUs.
+- Three-plane CT viewer with segmentation overlay controls.
+- Finding table with search, anatomy filtering, thresholding, and CSV export.
+- Review notebook with shortlist, status, notes, JSON export, and full score export.
 
-## Setup
+This is a research and product prototype. It is not a certified medical device and must not be used as an autonomous diagnosis system. Outputs require qualified radiologist review.
 
-Create a conda environment and install the required dependencies:
+## Upstream Project
+
+This work started from:
+
+https://github.com/alibaba-damo-academy/damo-radar
+
+The upstream project describes RADAR as a generalist vision-language model trained on contrast-enhanced abdominal CT examinations with anatomy-aware image-text pairs. The original documentation remains useful for model training, preprocessing, and evaluation:
+
+- `docs/TRAINING.md`
+- `docs/INFERENCE.md`
+- `docs/PREPROCESS.md`
+
+## Repository Setup
+
+Create a Python environment and install dependencies:
 
 ```bash
 conda create -n radar python=3.10
@@ -24,65 +39,107 @@ conda activate radar
 pip install -r requirements.txt
 ```
 
-<!-- > **Note:** The pinned package versions (e.g. `transformers==4.25`) follow the [LAVIS](https://github.com/salesforce/LAVIS). Other versions may also work. -->
+If using the local virtual environment that already exists on this machine:
 
----
+```bash
+source .venv/bin/activate
+```
 
-## HuggingFace
+## Model Files
 
-- The pre-trained checkpoints and supporting files are available on [HuggingFace](https://huggingface.co/radar-generalist).
-- For convenience, we have provided the demo nifty, and predicted results in CSV format in this repo. The supporting files required for the inference demo and training can be downloaded from HuggingFace.
-- Download via scripts: We provide two helper scripts under `download_scripts/` to fetch the required files from HuggingFace:
+The RADAR model checkpoints and supporting files are large and are not intended to be committed directly into this repository.
+
+Expected local layout:
+
+```text
+ckpt/
+  checkpoint_radar_pretrain.pth
+  infer_text_embedding_radar.pt
+  infer_text_embedding_merlin.pt
+  merlin_report_organ_normal_v1.json
+  merlin_report_organ_report_v1.json
+```
+
+Download the required model files from the RADAR Hugging Face organization or with the upstream helper scripts:
 
 ```bash
 cd download_scripts
-# Download model checkpoints and support files into ckpt/
 python download_checkpoints.py
-# Download auxiliary data (processed masks)
 python download_auxiliary_data.py
 ```
----
 
-## Zenodo
+## Run The App
 
-Code can also be archived on [Zenodo](https://zenodo.org/records/21271172).
+From the repository root:
 
----
+```bash
+streamlit run webapp/app.py --server.address 127.0.0.1 --server.port 8501
+```
 
-## Documentation
+Then open:
 
-For detailed instructions, please refer to the following guides:
+```text
+http://127.0.0.1:8501
+```
 
-| Guide                           | Description                                                                                                                                               |
-| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [Training](docs/TRAINING.md)     | Train RADAR/RADAR+ from scratch or fine-tune on MERLIN data; inference and evaluation are also included.                                                  |
-| [Inference](docs/INFERENCE.md)   | 1. An inference demo with a radar pre-trained checkpoint on RAD-CT, and 2. Inference and evaluation of radar performance on the external MERLIN test set. |
-| [Preprocess](docs/PREPROCESS.md) | Image/mask and radiology report preprocessing code, which can be used to process the MERLIN data or your own custom data.                                 |
+The app processes uploads locally. Temporary uploaded case files are written under the system temp directory with a `radar_web_` prefix and can be cleared from the sidebar.
 
----
+## Docker
 
-## Acknowledgements
+The Dockerfile copies the Streamlit app and `.streamlit` configuration, but checkpoints should be mounted instead of baked into the image.
 
-This project is built upon the following open-source projects:
+Build:
 
-- [LAVIS](https://github.com/salesforce/LAVIS) (BSD 3-Clause License)
-- [nnU-Net](https://github.com/MIC-DKFZ/nnUNet) (Apache License 2.0)
-- [MONAI](https://github.com/Project-MONAI/MONAI) (Apache License 2.0)
-- [3D-ResNets-PyTorch](https://github.com/kenshohara/3D-ResNets-PyTorch) (MIT License)
+```bash
+docker build -t radar-ke .
+```
 
----
+Run with local checkpoint and data directories mounted as needed:
 
-## License
+```bash
+docker run --gpus all -p 8501:8501 \
+  -v "$PWD/ckpt:/app/ckpt" \
+  radar-ke
+```
 
-This project is released under the [Apache License 2.0](LICENSE).
+## Development
 
-Portions of the code are derived from third-party open-source projects that are distributed under their own licenses (see the [Acknowledgements](#acknowledgements) above). Their original license texts are retained in [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
+Run the lightweight app tests:
 
----
+```bash
+python -m unittest webapp.tests.test_review webapp.tests.test_app
+```
 
-## Citation
+Check whitespace errors before committing:
 
-If you find RADAR useful in your research, please cite our paper:
+```bash
+git diff --check
+```
+
+## Git Remotes
+
+Recommended remote setup:
+
+```text
+origin   https://github.com/MorrisMuuoMulitu/radar-ke.git
+upstream https://github.com/alibaba-damo-academy/damo-radar.git
+```
+
+Use `origin` for this Kenya-focused product work. Keep `upstream` for pulling future changes from the original RADAR project.
+
+## Privacy And Clinical Use
+
+- Uploaded scans stay on the local machine during the current workflow.
+- The app does not send scans to a cloud service by default.
+- Review exports are generated locally.
+- The interface should be treated as a radiologist support tool.
+- Clinical deployment requires privacy, audit, security, validation, regulatory, and institution-specific review.
+
+## License And Attribution
+
+The upstream RADAR code is released under Apache License 2.0, with third-party components under their own licenses. Model weights, datasets, and supporting files may have separate terms. Review upstream licenses and asset terms before commercial use.
+
+If RADAR is useful in research work, cite the upstream paper:
 
 ```bibtex
 @article{damo-radar-2026,
