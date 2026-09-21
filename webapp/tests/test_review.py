@@ -61,6 +61,20 @@ class ReviewTests(unittest.TestCase):
         self.assertIn('Simple cyst favored.', report)
         self.assertIn('qualified radiologist review', report)
 
+    def test_structured_report_uses_confirmed_findings_before_shortlist(self):
+        record = review.build_case_record(
+            {'file_name': 'case.nii.gz', 'scores': {'原文 (Liver_Cyst)': 0.8, '原文 (Kidney_Cyst)': 0.2}},
+            status='Reviewed',
+            shortlist=['原文 (Kidney_Cyst)'],
+            notes='Prior available.',
+            finding_states={'原文 (Liver_Cyst)': 'Likely present', '原文 (Kidney_Cyst)': 'Likely absent'},
+        )
+        report = review.structured_report(record)
+        self.assertIn('Confirmed findings:', report)
+        self.assertIn('Liver / Cyst: 0.800', report)
+        self.assertNotIn('Kidney / Cyst: 0.200', report)
+        self.assertIn('Likely present: 1', report)
+
     def test_window_presets_map_hu_to_display_range(self):
         image = review.apply_window([-1000, 40, 400], center=40, width=400)
         self.assertEqual(float(image[0]), 0.0)

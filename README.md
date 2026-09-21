@@ -13,10 +13,12 @@ This repository keeps the original RADAR training, preprocessing, and inference 
 - Low-VRAM inference window selection for 8 GB GPUs.
 - Three-plane CT viewer with CT window presets, slice stepping, and segmentation overlay controls.
 - Finding table with search, anatomy filtering, thresholding, and CSV export.
-- Review notebook with shortlist, status, notes, JSON export, report text export, and full score export.
+- Review notebook with finding review states, shortlist, status, notes, JSON export, report text export, and full score export.
 - Local case-history snapshots for saved review metadata.
 
 Fresh analyses save a HU display volume aligned to the model output when possible, so the viewer can use radiology-style window width/level presets. Older saved outputs and some example paths fall back to normalized display data.
+
+The report draft uses findings marked `Likely present` as the structured confirmed-finding section. Shortlisted findings remain available for follow-up tracking and saved case history.
 
 This is a research and product prototype. It is not a certified medical device and must not be used as an autonomous diagnosis system. Outputs require qualified radiologist review.
 

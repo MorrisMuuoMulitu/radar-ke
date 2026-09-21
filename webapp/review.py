@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+FINDING_STATES = ['Needs review', 'Likely present', 'Likely absent', 'Ignore']
+
 WINDOW_PRESETS = {
     'Abdomen': {'center': 60, 'width': 400},
     'Liver': {'center': 70, 'width': 150},
@@ -49,7 +51,7 @@ def clear_case(state):
     if work and Path(work).name.startswith('radar_web_'):
         shutil.rmtree(work, ignore_errors=True)
     for key in list(state):
-        if key in ('work_dir', 'result', 'review_notes', 'review_flags', 'review_status') or key.startswith(('slice_', 'selected_')):
+        if key in ('work_dir', 'result', 'review_notes', 'review_flags', 'review_status', 'finding_states') or key.startswith(('slice_', 'selected_')):
             state.pop(key, None)
 
 
@@ -68,7 +70,7 @@ def _case_id(file_name, saved_at):
     return hashlib.sha256(seed).hexdigest()[:16]
 
 
-def build_case_record(result, status, shortlist, notes, saved_at=None):
+def build_case_record(result, status, shortlist, notes, finding_states=None, saved_at=None):
     saved_at = saved_at or datetime.now(timezone.utc).isoformat()
     scores = {key: _safe_float(value) for key, value in result.get('scores', {}).items()}
     file_name = result.get('file_name', 'unknown_case')
@@ -78,6 +80,7 @@ def build_case_record(result, status, shortlist, notes, saved_at=None):
         'saved_at': saved_at,
         'status': status,
         'shortlist': list(shortlist or []),
+        'finding_states': {key: value for key, value in (finding_states or {}).items() if value in FINDING_STATES},
         'notes': notes or '',
         'scores': scores,
         'example': bool(result.get('example', False)),
@@ -122,6 +125,9 @@ def list_case_records(store_dir=None):
 def structured_report(record):
     rows = score_table(record.get('scores', {}))
     labels = dict(zip(rows.key, rows.organ + ' / ' + rows.finding))
+    finding_states = record.get('finding_states', {})
+    confirmed = [key for key, state in finding_states.items() if state == 'Likely present']
+    state_counts = {state: list(finding_states.values()).count(state) for state in FINDING_STATES}
     lines = [
         'RADAR Structured Review Draft',
         '',
@@ -129,9 +135,15 @@ def structured_report(record):
         f'Review status: {record.get("status", "Not started")}',
         f'Saved at: {record.get("saved_at", "")}',
         '',
-        'Shortlisted findings:',
+        'Review state summary:',
+        f'- Likely present: {state_counts["Likely present"]}',
+        f'- Likely absent: {state_counts["Likely absent"]}',
+        f'- Needs review: {state_counts["Needs review"]}',
+        f'- Ignored: {state_counts["Ignore"]}',
+        '',
+        'Confirmed findings:' if confirmed else 'Shortlisted findings:',
     ]
-    shortlist = record.get('shortlist', [])
+    shortlist = confirmed or record.get('shortlist', [])
     if shortlist:
         scores = record.get('scores', {})
         for key in shortlist:

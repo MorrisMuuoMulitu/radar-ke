@@ -25,6 +25,7 @@ from review import (
     apply_window,
     build_case_record,
     clear_case,
+    FINDING_STATES,
     filter_findings,
     list_case_records,
     load_case_record,
@@ -256,6 +257,7 @@ with st.sidebar:
             }
             st.session_state.review_status = record.get('status', 'Not started')
             st.session_state.review_flags = record.get('shortlist', [])
+            st.session_state.finding_states = record.get('finding_states', {})
             st.session_state.review_notes = record.get('notes', '')
             st.rerun()
     st.divider()
@@ -300,10 +302,11 @@ else:
     example = result.get('example', False)
     detail = 'Bundled example • Previously computed model scores' if example else 'Local analysis • Model results ready'
     st.markdown(f'<div class="case-strip"><strong>{escape(result["file_name"])}</strong><small>{detail}</small></div>', unsafe_allow_html=True)
+    st.session_state.setdefault('finding_states', {})
     a, b, c, d = st.columns(4)
     a.metric('Scored findings', f'{rows.score.notna().sum()} / {len(rows)}')
     b.metric('Anatomical groups', rows.organ.nunique())
-    c.metric('Highest model score', f'{rows.score.max():.3f}' if rows.score.notna().any() else 'Unavailable')
+    c.metric('Likely present', sum(1 for state in st.session_state.finding_states.values() if state == 'Likely present'))
     d.metric('Review status', st.session_state.get('review_status', 'Not started'))
     st.caption('Scores compare predefined positive and negative prompts. They are not calibrated disease probabilities.')
     viewer, findings, review_tab = st.tabs(['Scan explorer', 'Findings', 'Review & export'])
@@ -339,6 +342,20 @@ else:
         st.caption('Your selections and notes stay with this case for the current session. Download them before clearing the case.')
         labels = dict(zip(rows.key, rows.organ + ' / ' + rows.finding))
         st.multiselect('Shortlist findings for follow-up', rows.key.tolist(), format_func=lambda x: labels.get(x, x), key='review_flags')
+        st.markdown('**Finding review states**')
+        state_a, state_b = st.columns([1.6, 1])
+        chosen_finding = state_a.selectbox('Finding to mark', rows.key.tolist(), format_func=lambda x: labels.get(x, x))
+        current_state = st.session_state.finding_states.get(chosen_finding, 'Needs review')
+        chosen_state = state_b.selectbox('Finding state', FINDING_STATES, index=FINDING_STATES.index(current_state))
+        if st.button('Apply finding state', width='stretch'):
+            st.session_state.finding_states[chosen_finding] = chosen_state
+            st.rerun()
+        if st.session_state.finding_states:
+            state_rows = [
+                {'finding': labels.get(key, key), 'state': state}
+                for key, state in st.session_state.finding_states.items()
+            ]
+            st.dataframe(pd.DataFrame(state_rows), hide_index=True, width='stretch', height=180)
         st.selectbox('Review status', ['Not started', 'In progress', 'Reviewed'], key='review_status')
         st.text_area('Reviewer notes', placeholder='Record observations, questions, and follow-up considerations…', height=180, key='review_notes')
         export = build_case_record(
@@ -346,6 +363,7 @@ else:
             st.session_state.review_status,
             st.session_state.review_flags,
             st.session_state.review_notes,
+            finding_states=st.session_state.finding_states,
             saved_at=datetime.now(timezone.utc).isoformat(),
         )
         report = structured_report(export)
