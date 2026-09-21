@@ -55,9 +55,9 @@ class ReviewTests(unittest.TestCase):
             notes='Simple cyst favored.',
         )
         report = review.structured_report(record)
-        self.assertIn('Case: case.nii.gz', report)
+        self.assertIn('Study: case.nii.gz', report)
         self.assertIn('Review status: Reviewed', report)
-        self.assertIn('Liver / Cyst: 0.800', report)
+        self.assertIn('- Cyst: 0.800', report)
         self.assertIn('Simple cyst favored.', report)
         self.assertIn('qualified radiologist review', report)
 
@@ -70,7 +70,7 @@ class ReviewTests(unittest.TestCase):
             finding_states={'原文 (Liver_Cyst)': 'Likely present', '原文 (Kidney_Cyst)': 'Likely absent'},
         )
         report = review.structured_report(record)
-        self.assertIn('Confirmed findings:', report)
+        self.assertIn('FINDINGS BY ORGAN', report)
         self.assertIn('Liver:', report)
         self.assertIn('- Cyst: 0.800', report)
         self.assertNotIn('Kidney:', report)
@@ -90,12 +90,101 @@ class ReviewTests(unittest.TestCase):
         self.assertIn('- Cyst: 0.800', report)
         self.assertIn('- Abscess: 0.700', report)
 
+    def test_structured_report_has_sections_and_clinical_reviewer_context(self):
+        record = review.build_case_record(
+            {'file_name': 'case.nii.gz', 'scores': {'原文 (Liver_Cyst)': 0.8}},
+            status='Reviewed',
+            shortlist=[],
+            notes='',
+            finding_states={'原文 (Liver_Cyst)': 'Likely present'},
+            clinical_context='RUQ pain, suspected cholecystitis',
+            reviewer='Dr. Test',
+        )
+        report = review.structured_report(record)
+        for section in ('CLINICAL CONTEXT', 'FINDINGS BY ORGAN', 'IMPRESSION', 'REVIEW LIMITATIONS'):
+            self.assertIn(section, report)
+        self.assertIn('RUQ pain, suspected cholecystitis', report)
+        self.assertIn('Dr. Test', report)
+        self.assertIn('Findings marked likely present:', report)
+        self.assertIn('Liver \u2014 Cyst: 0.800', report)
+
+    def test_structured_report_empty_case_shows_no_significant_findings(self):
+        record = review.build_case_record(
+            {'file_name': 'empty.nii.gz', 'scores': {'原文 (Liver_Cyst)': 0.1}},
+            status='Not started',
+            shortlist=[],
+            notes='',
+        )
+        report = review.structured_report(record)
+        self.assertIn('No significant findings', report)
+        self.assertIn('No definite abnormalities flagged', report)
+        self.assertIn('Not provided.', report)
+
+    def test_structured_report_excludes_absent_and_ignored_findings(self):
+        record = review.build_case_record(
+            {'file_name': 'case.nii.gz',
+             'scores': {'原文 (Liver_Cyst)': 0.9, '原文 (Liver_Abscess)': 0.8, '原文 (Kidney_Cyst)': 0.7}},
+            status='In progress',
+            shortlist=[],
+            notes='',
+            finding_states={'原文 (Liver_Cyst)': 'Likely absent', '原文 (Liver_Abscess)': 'Ignore',
+                            '原文 (Kidney_Cyst)': 'Likely present'},
+        )
+        report = review.structured_report(record)
+        self.assertNotIn('Liver:', report)
+        self.assertIn('Kidney:', report)
+        self.assertIn('- Cyst: 0.700', report)
+
     def test_window_presets_map_hu_to_display_range(self):
         image = review.apply_window([-1000, 40, 400], center=40, width=400)
         self.assertEqual(float(image[0]), 0.0)
         self.assertAlmostEqual(float(image[1]), 0.5, places=2)
         self.assertEqual(float(image[2]), 1.0)
         self.assertIn('Abdomen', review.WINDOW_PRESETS)
+
+    def test_worklist_rows_reports_likely_present_metadata(self):
+        with tempfile.TemporaryDirectory() as folder:
+            record = review.build_case_record(
+                {'file_name': 'case.nii.gz',
+                 'scores': {'原文 (Liver_Cyst)': 0.8, '原文 (Liver_Abscess)': 0.7, '原文 (Kidney_Cyst)': 0.2}},
+                status='In progress',
+                shortlist=['原文 (Liver_Cyst)'],
+                notes='',
+                finding_states={'原文 (Liver_Cyst)': 'Likely present', '原文 (Liver_Abscess)': 'Likely present',
+                                '原文 (Kidney_Cyst)': 'Likely absent'},
+            )
+            review.save_case_record(record, Path(folder))
+            rows = review.worklist_rows(Path(folder))
+            self.assertEqual(len(rows), 1)
+            row = rows.iloc[0]
+            self.assertEqual(row['file_name'], 'case.nii.gz')
+            self.assertEqual(row['status'], 'In progress')
+            self.assertEqual(row['shortlist_count'], 1)
+            self.assertEqual(row['likely_present_count'], 2)
+            self.assertIn('Liver / Cyst', row['likely_present'])
+            self.assertIn('Liver / Abscess', row['likely_present'])
+            self.assertNotIn('Kidney', row['likely_present'])
+
+    def test_filter_worklist_searches_and_filters_by_status(self):
+        with tempfile.TemporaryDirectory() as folder:
+            for name, status in [('alpha.nii.gz', 'Reviewed'), ('beta.nii.gz', 'Not started')]:
+                record = review.build_case_record({'file_name': name, 'scores': {}}, status, [], '')
+                review.save_case_record(record, Path(folder))
+            rows = review.worklist_rows(Path(folder))
+            self.assertEqual(len(review.filter_worklist(rows, query='beta')), 1)
+            self.assertEqual(review.filter_worklist(rows, query='beta').iloc[0]['file_name'], 'beta.nii.gz')
+            self.assertEqual(len(review.filter_worklist(rows, statuses=['Reviewed'])), 1)
+            self.assertEqual(len(review.filter_worklist(rows, query='nope', statuses=['Reviewed'])), 0)
+            self.assertEqual(len(review.filter_worklist(rows, statuses=[])), 2)
+
+    def test_delete_case_record_removes_json_only(self):
+        with tempfile.TemporaryDirectory() as folder:
+            record = review.build_case_record({'file_name': 'case.nii.gz', 'scores': {}}, 'Not started', [], '')
+            saved = review.save_case_record(record, Path(folder))
+            self.assertTrue(Path(folder, saved['case_id'] + '.json').exists())
+            self.assertTrue(review.delete_case_record(saved['case_id'], Path(folder)))
+            self.assertFalse(Path(folder, saved['case_id'] + '.json').exists())
+            self.assertFalse(review.delete_case_record(saved['case_id'], Path(folder)))
 
 if __name__ == '__main__':
     unittest.main()

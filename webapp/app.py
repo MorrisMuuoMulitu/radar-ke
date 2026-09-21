@@ -25,13 +25,17 @@ from review import (
     apply_window,
     build_case_record,
     clear_case,
+    delete_case_record,
+    filter_worklist,
     FINDING_STATES,
     filter_findings,
     list_case_records,
     load_case_record,
+    REVIEW_STATUSES,
     save_case_record,
     score_table,
     structured_report,
+    worklist_rows,
 )
 os.environ.setdefault('MODEL_ROOT', str(REPO_ROOT / 'ckpt'))
 os.environ.setdefault('CONFIGS_ROOT', str(REPO_ROOT / 'ckpt'))
@@ -166,7 +170,28 @@ def start_case(upload):
             result = run_case(str(path), str(work / 'case'))
         result['elapsed'] = time.monotonic() - started
         st.session_state.result = result
+        st.session_state['_nav_view'] = 'Review workspace'
         status.update(label='Scan ready for review', state='complete', expanded=False)
+        st.rerun()
+
+
+def open_saved_case(case_id):
+    """Load a saved review record into the session and switch to the workspace."""
+    record = load_case_record(case_id)
+    clear_case(st.session_state)
+    st.session_state.result = {
+        'file_name': record.get('file_name', 'saved_case'),
+        'scores': record.get('scores', {}),
+        'example': record.get('example', False),
+        'history_only': True,
+        'saved_record': record,
+    }
+    st.session_state.review_status = record.get('status', 'Not started')
+    st.session_state.review_flags = record.get('shortlist', [])
+    st.session_state.finding_states = record.get('finding_states', {})
+    st.session_state.review_notes = record.get('notes', '')
+    st.session_state.review_context = record.get('clinical_context', '')
+    st.session_state['_nav_view'] = 'Review workspace'
 
 
 def slice_rgb(image, mask, axis, index, display_mode, window_level, window_width, overlay, opacity, selected):
@@ -245,9 +270,68 @@ def show_viewer(result):
                    (f' • {len(present)} segmented structures' if mask is not None else ''))
 
 
+def show_worklist():
+    st.markdown('<div class="workspace-header"><div><h1>Case worklist</h1><p>Saved reviews across the workspace</p></div><span class="status-chip">Worklist</span></div>', unsafe_allow_html=True)
+    rows = worklist_rows()
+    if rows.empty:
+        st.markdown('<div class="welcome"><h2>No saved cases yet.</h2><p>Analyze a scan and use “Save case to history” in the Review &amp; export tab — saved cases appear here with their review status and likely-present findings.</p></div>', unsafe_allow_html=True)
+        return
+    a, b, c, d = st.columns(4)
+    a.metric('Total cases', len(rows))
+    b.metric('Not started', int((rows['status'] == 'Not started').sum()))
+    c.metric('In progress', int((rows['status'] == 'In progress').sum()))
+    d.metric('Reviewed', int((rows['status'] == 'Reviewed').sum()))
+    st.divider()
+    a, b, c = st.columns([1.4, 1, 1])
+    query = a.text_input('Search cases', placeholder='Filename…')
+    statuses = b.multiselect('Filter by status', REVIEW_STATUSES)
+    sort = c.selectbox('Sort by', ['Newest', 'Oldest', 'Filename', 'Status'])
+    filtered = filter_worklist(rows, query, statuses, sort)
+    st.caption(f'{len(filtered)} of {len(rows)} cases')
+    if filtered.empty:
+        st.info('No cases match these filters. Try a different filename or clear the status filter.')
+    for _, row in filtered.iterrows():
+        with st.container(border=True):
+            col_a, col_b, col_c, col_d = st.columns([1.7, 1, 1.4, 1])
+            with col_a:
+                st.markdown(f'**{escape(row["file_name"])}**')
+                saved_text = str(row['saved_at'])[:19].replace('T', ' ') if row.get('saved_at') else '—'
+                st.caption(f'Saved {saved_text} • ID {row["case_id"][:8]}')
+            with col_b:
+                st.markdown(f'**{escape(row["status"])}**')
+                st.caption(f'Shortlist: {row["shortlist_count"]}')
+            with col_c:
+                if row['likely_present_count']:
+                    st.markdown(f'**{int(row["likely_present_count"])} likely present**')
+                    preview = str(row['likely_present'])
+                    st.caption(preview[:90] + ('…' if len(preview) > 90 else ''))
+                else:
+                    st.caption('No likely-present findings marked')
+            with col_d:
+                if st.button('Open case', key=f'open_{row["case_id"]}', width='stretch'):
+                    open_saved_case(row['case_id'])
+                    st.rerun()
+                report = structured_report(load_case_record(row['case_id']))
+                st.download_button('Report TXT', report, f'{Path(row["file_name"]).stem}_report.txt',
+                                   'text/plain', key=f'report_{row["case_id"]}', width='stretch')
+                if st.button('Delete', key=f'del_{row["case_id"]}', width='stretch'):
+                    delete_case_record(row['case_id'])
+                    st.rerun()
+    st.download_button('Download worklist CSV',
+                       filtered.drop(columns='case_id').to_csv(index=False).encode('utf-8-sig'),
+                       'radar_worklist.csv', 'text/csv')
+
+
+# Consume view-switch intents BEFORE the View radio widget is instantiated
+# (widget keys cannot be modified after the widget is created).
+_nav_intent = st.session_state.pop('_nav_view', None)
+if _nav_intent:
+    st.session_state.app_view = _nav_intent
+
 gpu = hardware()
 with st.sidebar:
     st.markdown('''<div class="brand"><svg width="42" height="42" viewBox="0 0 42 42" fill="none"><circle cx="21" cy="21" r="18" stroke="#64c6cc" stroke-width="2"/><circle cx="21" cy="21" r="10" stroke="#64c6cc"/><path d="M21 3v36M3 21h36" stroke="#64c6cc"/><circle cx="21" cy="21" r="3" fill="#fff"/></svg><div><strong>RADAR</strong><small>Abdominal CT workspace</small></div></div>''', unsafe_allow_html=True)
+    st.radio('View', ['Review workspace', 'Case worklist'], horizontal=True, key='app_view')
     st.subheader('Case workspace')
     st.caption('Import a scan or explore the included example.')
     upload = st.file_uploader('Import CT scan', type=['nii', 'gz', 'zip'], help='One NIfTI volume or a ZIP containing one DICOM series.')
@@ -257,6 +341,8 @@ with st.sidebar:
             example = read_example()
             clear_case(st.session_state)
             st.session_state.result = dict(example)
+            st.session_state['_nav_view'] = 'Review workspace'
+            st.rerun()
         except Exception as exc:
             st.error(f'Example unavailable: {exc}')
     history = list_case_records()
@@ -269,19 +355,7 @@ with st.sidebar:
         }
         selected_history = st.selectbox('Saved cases', list(history_labels.keys()))
         if st.button('Open saved review', width='stretch'):
-            record = load_case_record(history_labels[selected_history])
-            clear_case(st.session_state)
-            st.session_state.result = {
-                'file_name': record.get('file_name', 'saved_case'),
-                'scores': record.get('scores', {}),
-                'example': record.get('example', False),
-                'history_only': True,
-                'saved_record': record,
-            }
-            st.session_state.review_status = record.get('status', 'Not started')
-            st.session_state.review_flags = record.get('shortlist', [])
-            st.session_state.finding_states = record.get('finding_states', {})
-            st.session_state.review_notes = record.get('notes', '')
+            open_saved_case(history_labels[selected_history])
             st.rerun()
     st.divider()
     st.subheader('Compute')
@@ -307,7 +381,9 @@ if run:
         st.info('Check the scan format and GPU memory, then try again. The example remains available.')
 
 result = st.session_state.get('result')
-if result is None:
+if st.session_state.get('app_view', 'Review workspace') == 'Case worklist':
+    show_worklist()
+elif result is None:
     st.markdown('<div class="welcome"><h2>A closer look at every scan.</h2><p>Bring anatomy and model findings into one review surface. Inspect three planes, focus on an organ, and capture the findings that deserve a closer look.</p></div>', unsafe_allow_html=True)
     a, b, c = st.columns(3)
     with a:
@@ -396,7 +472,8 @@ else:
                 for key, state in st.session_state.finding_states.items()
             ]
             st.dataframe(pd.DataFrame(state_rows), hide_index=True, width='stretch', height=180)
-        st.selectbox('Review status', ['Not started', 'In progress', 'Reviewed'], key='review_status')
+        st.selectbox('Review status', REVIEW_STATUSES, key='review_status')
+        st.text_input('Clinical context / indication', placeholder='e.g. RUQ pain, known hepatic lesion, follow-up', key='review_context')
         st.text_area('Reviewer notes', placeholder='Record observations, questions, and follow-up considerations…', height=180, key='review_notes')
         export = build_case_record(
             result,
@@ -405,6 +482,7 @@ else:
             st.session_state.review_notes,
             finding_states=st.session_state.finding_states,
             saved_at=datetime.now(timezone.utc).isoformat(),
+            clinical_context=st.session_state.get('review_context', ''),
         )
         report = structured_report(export)
         st.subheader('Structured report draft')

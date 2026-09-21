@@ -58,6 +58,7 @@ class WorkspaceTests(unittest.TestCase):
                     'image': np.ones((4, 5, 6), dtype=np.float32) * 0.5, 'mask': None,
                     'scores': {'原文 (Liver_Cyst)': 0.8}}
                 app.run()
+                next(t for t in app.text_input if t.label == 'Clinical context / indication').set_value('RUQ pain.').run()
                 next(t for t in app.text_area if t.label == 'Reviewer notes').set_value('Follow up with prior study.').run()
                 next(s for s in app.multiselect if s.label == 'Shortlist findings for follow-up').set_value(['原文 (Liver_Cyst)']).run()
                 next(s for s in app.selectbox if s.label == 'Finding to mark').set_value('原文 (Liver_Cyst)').run()
@@ -69,7 +70,34 @@ class WorkspaceTests(unittest.TestCase):
                 self.assertTrue(any('history_case.nii.gz' in option for s in app.selectbox if s.label == 'Saved cases' for option in s.options))
                 next(b for b in app.button if b.label == 'Open saved review').click().run()
                 self.assertTrue(app.session_state['result']['history_only'])
+                self.assertEqual(app.session_state['review_context'], 'RUQ pain.')
                 self.assertTrue(any('Structured report draft' in h.value for h in app.subheader))
+                self.assertFalse(app.exception)
+            finally:
+                os.environ.pop('RADAR_CASE_HISTORY_DIR', None)
+
+    def test_worklist_view_lists_cases_and_opens_from_list(self):
+        with tempfile.TemporaryDirectory() as history:
+            os.environ['RADAR_CASE_HISTORY_DIR'] = history
+            try:
+                app = AppTest.from_file(str(APP), default_timeout=30)
+                app.session_state['result'] = {'file_name': 'worklist_case.nii.gz', 'example': True,
+                    'image': np.ones((4, 5, 6), dtype=np.float32) * 0.5, 'mask': None,
+                    'scores': {'原文 (Liver_Cyst)': 0.8}}
+                app.run()
+                next(s for s in app.selectbox if s.label == 'Finding to mark').set_value('原文 (Liver_Cyst)').run()
+                next(s for s in app.selectbox if s.label == 'Finding state').set_value('Likely present').run()
+                next(b for b in app.button if b.label == 'Apply finding state').click().run()
+                next(b for b in app.button if b.label == 'Save case to history').click().run()
+                self.assertTrue(list(Path(history).glob('*.json')))
+                next(r for r in app.radio if r.label == 'View').set_value('Case worklist').run()
+                worklist_md = [m.value for m in app.markdown]
+                self.assertTrue(any('Case worklist' in v for v in worklist_md))
+                self.assertTrue(any('worklist_case.nii.gz' in v for v in worklist_md))
+                self.assertTrue(any('1 likely present' in v for v in worklist_md))
+                next(b for b in app.button if b.label == 'Open case').click().run()
+                self.assertTrue(app.session_state['result']['history_only'])
+                self.assertEqual(app.session_state['app_view'], 'Review workspace')
                 self.assertFalse(app.exception)
             finally:
                 os.environ.pop('RADAR_CASE_HISTORY_DIR', None)
