@@ -125,6 +125,7 @@ def list_case_records(store_dir=None):
 def structured_report(record):
     rows = score_table(record.get('scores', {}))
     labels = dict(zip(rows.key, rows.organ + ' / ' + rows.finding))
+    row_lookup = rows.set_index('key').to_dict('index')
     finding_states = record.get('finding_states', {})
     confirmed = [key for key, state in finding_states.items() if state == 'Likely present']
     state_counts = {state: list(finding_states.values()).count(state) for state in FINDING_STATES}
@@ -143,15 +144,21 @@ def structured_report(record):
         '',
         'Confirmed findings:' if confirmed else 'Shortlisted findings:',
     ]
-    shortlist = confirmed or record.get('shortlist', [])
-    if shortlist:
-        scores = record.get('scores', {})
-        for key in shortlist:
-            score = scores.get(key)
-            score_text = 'unavailable' if score is None or pd.isna(score) else f'{float(score):.3f}'
-            lines.append(f'- {labels.get(key, key)}: {score_text}')
+    if confirmed:
+        for organ, findings in _group_confirmed_findings(confirmed, row_lookup, labels).items():
+            lines.append(f'{organ}:')
+            for finding, score_text in findings:
+                lines.append(f'- {finding}: {score_text}' if score_text else f'- {finding}')
     else:
-        lines.append('- None selected')
+        shortlist = record.get('shortlist', [])
+        if shortlist:
+            scores = record.get('scores', {})
+            for key in shortlist:
+                score = scores.get(key)
+                score_text = 'unavailable' if score is None or pd.isna(score) else f'{float(score):.3f}'
+                lines.append(f'- {labels.get(key, key)}: {score_text}')
+        else:
+            lines.append('- None selected')
     lines.extend([
         '',
         'Reviewer notes:',
@@ -160,3 +167,16 @@ def structured_report(record):
         'Notice: Research use only. This draft is not a diagnosis and requires qualified radiologist review.',
     ])
     return '\n'.join(lines)
+
+
+def _group_confirmed_findings(confirmed, row_lookup, labels):
+    grouped = {}
+    for key in confirmed:
+        row = row_lookup.get(key)
+        if row is None:
+            grouped.setdefault('Other', []).append((labels.get(key, key), None))
+            continue
+        score = row.get('score')
+        score_text = 'unavailable' if score is None or pd.isna(score) else f'{float(score):.3f}'
+        grouped.setdefault(row.get('organ', 'Other'), []).append((row.get('finding', key), score_text))
+    return grouped

@@ -52,6 +52,7 @@ ORGAN_INDEX = {
     32: 'Trachea', 33: 'Bladder', 34: 'Cervical vertebrae',
     35: 'Lumbar vertebrae', 36: 'Thoracic vertebrae',
 }
+ORGAN_NAME_TO_INDEX = {name: index for index, name in ORGAN_INDEX.items()}
 
 
 @st.cache_resource(show_spinner=False)
@@ -99,6 +100,24 @@ def case_arrays(result):
             result['_mask'] = np.squeeze(data['mask']).astype(np.uint8)
             result['_display_mode'] = 'hu' if 'display_hu' in data.files else 'normalized'
     return result['_image'], result['_mask'], result.get('_display_mode', 'normalized')
+
+
+def mask_center(mask, label):
+    if mask is None or not label:
+        return None
+    points = np.argwhere(mask == label)
+    if points.size == 0:
+        return None
+    return np.median(points, axis=0).astype(int)
+
+
+def center_viewer_on_label(mask, label):
+    center = mask_center(mask, label)
+    if center is None:
+        return False
+    for axis in range(3):
+        st.session_state[f'slice_{axis}'] = int(center[axis])
+    return True
 
 
 def convert_dicom(path, work):
@@ -167,6 +186,9 @@ def slice_rgb(image, mask, axis, index, display_mode, window_level, window_width
 
 def show_viewer(result):
     image, mask, display_mode = case_arrays(result)
+    pending_jump = st.session_state.pop('pending_anatomy_jump', None)
+    if pending_jump and center_viewer_on_label(mask, pending_jump):
+        st.session_state.highlight_anatomy = int(pending_jump)
     with st.container(border=True):
         st.subheader('Volume explorer')
         st.caption('Orientation is not validated for diagnostic use. Window presets use HU when available.')
@@ -184,14 +206,15 @@ def show_viewer(result):
         opacity = 0.45
         if mask is not None:
             a, b, c = st.columns([1.3, 1, 1])
+            if st.session_state.get('highlight_anatomy') not in [0] + present:
+                st.session_state.highlight_anatomy = 0
             selected = a.selectbox('Highlight anatomy', [0] + present,
-                format_func=lambda x: 'All segmented anatomy' if x == 0 else ORGAN_INDEX.get(x, str(x)))
+                format_func=lambda x: 'All segmented anatomy' if x == 0 else ORGAN_INDEX.get(x, str(x)),
+                key='highlight_anatomy')
             overlay = b.checkbox('Show organ overlay', value=True)
             opacity = c.slider('Overlay opacity', 0.1, 0.9, 0.45, 0.05)
             if selected and st.button('Center on selected anatomy'):
-                center = np.median(np.argwhere(mask == selected), axis=0).astype(int)
-                for axis in range(3):
-                    st.session_state[f'slice_{axis}'] = int(center[axis])
+                center_viewer_on_label(mask, selected)
         else:
             st.caption('Example uses saved scores and the bundled scan. Segmentation overlays become available after running inference.')
         names = ['Axial', 'Coronal', 'Sagittal']
@@ -341,12 +364,29 @@ else:
         st.subheader('Review notebook')
         st.caption('Your selections and notes stay with this case for the current session. Download them before clearing the case.')
         labels = dict(zip(rows.key, rows.organ + ' / ' + rows.finding))
+        row_lookup = rows.set_index('key').to_dict('index')
         st.multiselect('Shortlist findings for follow-up', rows.key.tolist(), format_func=lambda x: labels.get(x, x), key='review_flags')
         st.markdown('**Finding review states**')
         state_a, state_b = st.columns([1.6, 1])
-        chosen_finding = state_a.selectbox('Finding to mark', rows.key.tolist(), format_func=lambda x: labels.get(x, x))
+        if st.session_state.get('selected_finding') not in rows.key.tolist():
+            st.session_state.selected_finding = rows.key.iloc[0]
+        chosen_finding = state_a.selectbox('Finding to mark', rows.key.tolist(),
+            format_func=lambda x: labels.get(x, x), key='selected_finding')
         current_state = st.session_state.finding_states.get(chosen_finding, 'Needs review')
         chosen_state = state_b.selectbox('Finding state', FINDING_STATES, index=FINDING_STATES.index(current_state))
+        selected_row = row_lookup.get(chosen_finding, {})
+        selected_organ = selected_row.get('organ')
+        organ_label = ORGAN_NAME_TO_INDEX.get(selected_organ)
+        jump_available = False
+        if organ_label and not result.get('history_only'):
+            _, review_mask, _ = case_arrays(result)
+            jump_available = mask_center(review_mask, organ_label) is not None
+        if st.button('Jump to anatomy in viewer', width='stretch', disabled=not jump_available):
+            st.session_state.pending_anatomy_jump = organ_label
+            st.toast(f'Opening {selected_organ} in the scan explorer.')
+            st.rerun()
+        if organ_label and not jump_available:
+            st.caption(f'Anatomy jump will be available when {selected_organ} segmentation exists for this case.')
         if st.button('Apply finding state', width='stretch'):
             st.session_state.finding_states[chosen_finding] = chosen_state
             st.rerun()

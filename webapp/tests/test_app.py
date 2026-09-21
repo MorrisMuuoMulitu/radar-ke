@@ -40,6 +40,8 @@ class WorkspaceTests(unittest.TestCase):
             next(s for s in app.selectbox if s.label == 'Finding state').set_value('Likely present').run()
             next(b for b in app.button if b.label == 'Apply finding state').click().run()
             self.assertEqual(app.session_state['finding_states']['原文 (Liver_Cyst)'], 'Likely present')
+            next(b for b in app.button if b.label == 'Jump to anatomy in viewer').click().run()
+            self.assertEqual(app.session_state['slice_0'], 3)
             self.assertEqual(app.session_state['review_notes'], 'Test note')
             self.assertFalse(app.exception)
             next(b for b in app.button if b.label == 'Clear case and delete uploads').click().run()

@@ -71,9 +71,24 @@ class ReviewTests(unittest.TestCase):
         )
         report = review.structured_report(record)
         self.assertIn('Confirmed findings:', report)
-        self.assertIn('Liver / Cyst: 0.800', report)
-        self.assertNotIn('Kidney / Cyst: 0.200', report)
+        self.assertIn('Liver:', report)
+        self.assertIn('- Cyst: 0.800', report)
+        self.assertNotIn('Kidney:', report)
         self.assertIn('Likely present: 1', report)
+
+    def test_structured_report_groups_confirmed_findings_by_anatomy(self):
+        record = review.build_case_record(
+            {'file_name': 'case.nii.gz',
+             'scores': {'原文 (Liver_Cyst)': 0.8, '原文 (Liver_Abscess)': 0.7, '原文 (Kidney_Cyst)': 0.2}},
+            status='Reviewed',
+            shortlist=[],
+            notes='',
+            finding_states={'原文 (Liver_Cyst)': 'Likely present', '原文 (Liver_Abscess)': 'Likely present'},
+        )
+        report = review.structured_report(record)
+        self.assertIn('Liver:', report)
+        self.assertIn('- Cyst: 0.800', report)
+        self.assertIn('- Abscess: 0.700', report)
 
     def test_window_presets_map_hu_to_display_range(self):
         image = review.apply_window([-1000, 40, 400], center=40, width=400)
