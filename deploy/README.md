@@ -72,6 +72,8 @@ analysis triggers segmentation + scoring on the GPU).
 - **VPN** (Tailscale/ZeroTier): give testers the machine's VPN IP; no public
   ports are opened.
 - Give each tester [deploy/TESTERS.md](TESTERS.md).
+- Ready-to-send invite message, admin checklist and per-OS certificate steps:
+  [deploy/TESTER_INVITE.md](TESTER_INVITE.md).
 
 ### TLS certificate (recommended: trust the local CA)
 
