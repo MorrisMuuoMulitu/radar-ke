@@ -24,6 +24,10 @@ services:
       # so the repo-root ckpt is ../ckpt.
       - ../ckpt:/app/ckpt:ro
       - radar-data:/data
+    # CT volumes are large and the inference DataLoader (num_workers=12) passes
+    # them between processes via /dev/shm; the Docker default (64 MB) is far too
+    # small and causes "unable to allocate shared memory(shm)" errors.
+    shm_size: "4gb"
     deploy:
       resources:
         reservations:
@@ -58,7 +62,10 @@ services:
       - caddy-data:/data
       - caddy-config:/config
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:80/"]
+      # Probe the admin API rather than http://127.0.0.1:80/: port 80 issues an
+      # automatic HTTP->HTTPS redirect to a name the internal cert doesn't cover,
+      # so wget fails the TLS handshake and reports a false negative.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
       interval: 30s
       timeout: 5s
       retries: 3

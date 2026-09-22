@@ -26,6 +26,9 @@ webapp/outputs/
 # deployment secrets (never commit)
 deploy/.env
 
+# deployment runtime output (smoke-test results etc.)
+deploy/smoke-out/
+
 # large / external data (fetch separately, never commit)
 data/merlin_data_train_full/
 data/test_scans/
