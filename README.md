@@ -219,6 +219,20 @@ docker build -t radar-ke .
 docker run --gpus all -p 8501:8501 -v "$PWD/ckpt:/app/ckpt" radar-ke
 ```
 
+## Deployment
+
+A ready-to-run deployment stack lives in [`deploy/`](deploy/README.md):
+
+- **Path A — LAN/VPN pilot:** Docker Compose (GPU webapp + Caddy reverse
+  proxy with basic auth and TLS), persistent case data volume, tester guide
+  (`deploy/TESTERS.md`), and a password-hash helper.
+- **Path B — GPU cloud VM:** [`docs/DEPLOYMENT_CLOUD.md`](docs/DEPLOYMENT_CLOUD.md)
+  covers providers, provisioning, Let's Encrypt on a real domain, operations,
+  cost control, and data/privacy rules.
+
+Same Compose stack for both — start locally, move to the cloud later without
+rework.
+
 ## Tests
 
 ```bash

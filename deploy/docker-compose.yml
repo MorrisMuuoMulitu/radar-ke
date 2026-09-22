@@ -1,0 +1,67 @@
+# RADAR Kenya — protected webapp deployment (LAN/VPN pilot).
+# Run from the repository root:
+#   cp deploy/.env.example deploy/.env   # then set RADAR_AUTH_HASH
+#   docker compose -f deploy/docker-compose.yml up -d --build
+# Details: deploy/README.md
+name: radar-ke
+
+services:
+  webapp:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: radar-ke:latest
+    restart: unless-stopped
+    environment:
+      RADAR_CASE_HISTORY_DIR: /data/cases
+      MODEL_ROOT: /app/ckpt
+      CONFIGS_ROOT: /app/ckpt
+      HF_HOME: /data/hf-cache
+      MPLCONFIGDIR: /tmp/mpl
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+    volumes:
+      - ./ckpt:/app/ckpt:ro
+      - radar-data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    expose:
+      - "8501"
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 180s
+      retries: 3
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - webapp
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      CADDY_DOMAIN: ${CADDY_DOMAIN:-radar.localhost}
+      RADAR_AUTH_USER: ${RADAR_AUTH_USER:-radiologist}
+      RADAR_AUTH_HASH: ${RADAR_AUTH_HASH:?set RADAR_AUTH_HASH in deploy/.env — see deploy/README.md}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  radar-data:
+  caddy-data:
+  caddy-config:
