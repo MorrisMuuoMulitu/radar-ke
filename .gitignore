@@ -23,6 +23,9 @@ results/.~lock*
 webapp/uploads/
 webapp/outputs/
 
+# deployment secrets (never commit)
+deploy/.env
+
 # large / external data (fetch separately, never commit)
 data/merlin_data_train_full/
 data/test_scans/

@@ -20,7 +20,9 @@ services:
       MPLCONFIGDIR: /tmp/mpl
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
     volumes:
-      - ./ckpt:/app/ckpt:ro
+      # Relative bind paths resolve against the compose file's directory (deploy/),
+      # so the repo-root ckpt is ../ckpt.
+      - ../ckpt:/app/ckpt:ro
       - radar-data:/data
     deploy:
       resources:
