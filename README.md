@@ -4,6 +4,25 @@ RADAR Kenya is a local, radiologist-centered review workspace for contrast-enhan
 
 This repository keeps the original RADAR training, preprocessing, and inference code available while adding the practical web app in `webapp/`.
 
+## Where to look first
+
+This repository contains two distinct bodies of work.
+
+**Original work in this repository:**
+- `webapp/app.py` — the Streamlit review workspace: viewer, findings explorer, review notebook, report export, worklist.
+- `webapp/review.py` — Streamlit-independent domain logic. **Start here** for the clinical validation harness (`validation_table`, `validation_summary`, `match_findings_to_report`), which computes agreement against a radiologist reference over adjudicated findings only.
+- `webapp/tests/` — unit tests for the review workflow, report template, and validation metrics.
+- `RADAR_inference/inference_service.py` — device-agnostic inference service used by the app. **Not part of upstream**; written here to add GPU auto-detection, compact inference windows on low-VRAM cards, and a CPU fallback.
+- `deploy/` — Docker Compose stack (GPU webapp + Caddy reverse proxy with basic auth and TLS), persistent case volume, and the tester onboarding pack.
+- `docs/DEPLOYMENT_CLOUD.md`, `docs/deployment-agent-prompt.md`, `DEPLOYMENT_REPORT.md` — cloud deployment path, deployment agent brief, and the pilot deployment record.
+
+**Upstream research code — Alibaba DAMO Academy, Apache 2.0:**
+- `RADAR_train/` — training and preprocessing.
+- `RADAR_inference/` **except** `inference_service.py` — `inference_demo.py`, `inference_merlin_testset.py`, `calc_metrics_merlin_testset.py`, and `dynamic_network_architectures/`.
+- `docs/INFERENCE.md`, `docs/PREPROCESS.md`, `docs/TRAINING.md`, `download_scripts/`, and the `ckpt/` helper scripts.
+
+Model checkpoints are not committed — see [Model Files](#model-files).
+
 > **Status: research and product prototype.** Not a certified medical device and must not be used as an autonomous diagnosis system. Outputs require qualified radiologist review.
 
 ## Feature Overview
@@ -251,8 +270,11 @@ Coverage includes: findings filtering/export, review-state workflow (AppTest), w
 | `webapp/review.py` | Pure, Streamlit-independent logic: score tables, filters, case records + JSON history store, worklist aggregation, structured (radiology) report, validation metrics and report-text extraction. |
 | `webapp/style.css` | Styling for the workspace shell. |
 | `webapp/.streamlit/config.toml` | Server settings (headless, upload cap). |
-| `RADAR_inference/inference_service.py` | Device-agnostic inference (`_infer_device()`): NIfTI load → resample 1×1×5 mm → sliding-window segmentation → per-organ finding scoring → `.npz` (image/HU/mask/scores) + CSV. |
-| `RADAR_train/`, `RADAR_inference/`, `docs/` | Upstream RADAR training / inference / preprocessing code and documentation. |
+| `RADAR_inference/inference_service.py` | **Original.** Device-agnostic inference (`_infer_device()`): NIfTI load → resample 1×1×5 mm → sliding-window segmentation → per-organ finding scoring → `.npz` (image/HU/mask/scores) + CSV. Not part of upstream. |
+| `deploy/` | **Original.** Docker Compose stack: GPU webapp + Caddy reverse proxy (basic auth, internal TLS), persistent case volume, tester onboarding pack, password-hash helper. |
+| `docs/DEPLOYMENT_CLOUD.md`, `docs/deployment-agent-prompt.md` | **Original.** GPU cloud deployment path, and the self-contained deployment agent brief. |
+| `DEPLOYMENT_REPORT.md` | **Original.** Pilot deployment record: hardening steps, verification results, issues found and their fixes. |
+| `RADAR_train/`, `RADAR_inference/*` (except `inference_service.py`), upstream `docs/` | Upstream RADAR training / inference / preprocessing code and documentation (Apache 2.0). |
 | `download_scripts/` | Hugging Face helpers for checkpoints and auxiliary data. |
 | `data/test_scans/` | Optional downloaded test scans (git-ignored; see [Data](#data)). |
 
