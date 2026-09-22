@@ -73,6 +73,30 @@ analysis triggers segmentation + scoring on the GPU).
   ports are opened.
 - Give each tester [deploy/TESTERS.md](TESTERS.md).
 
+### TLS certificate (recommended: trust the local CA)
+
+Caddy uses its own internal CA (`tls internal`), so browsers warn with
+`ERR_CERT_AUTHORITY_INVALID` until you click through. To remove the warning,
+extract and trust Caddy's root CA once per machine:
+
+```bash
+# extract (already done in this repo → deploy/tls/caddy-root.crt)
+docker run --rm -v radar-ke_caddy-data:/data:ro alpine \
+  sh -c 'cat /data/caddy/pki/authorities/local/root.crt' > deploy/tls/caddy-root.crt
+
+# Ubuntu/Debian system store (Chrome/Edge after browser restart)
+sudo cp deploy/tls/caddy-root.crt /usr/local/share/ca-certificates/caddy-radar.crt
+sudo update-ca-certificates
+
+# Firefox (separate store): Settings → Privacy & Security → Certificates →
+# View Certificates… → Authorities → Import… → deploy/tls/caddy-root.crt
+# Windows: double-click the .crt → Install Certificate → Local Machine →
+# Trusted Root Certification Authorities.
+```
+
+Only trust this CA on machines you control. Deleting the `radar-ke_caddy-data`
+volume regenerates a new CA (re-extract and re-install).
+
 ## 5. Day-to-day
 
 ```bash
