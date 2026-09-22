@@ -25,4 +25,5 @@ webapp/outputs/
 
 # large / external data (fetch separately, never commit)
 data/merlin_data_train_full/
+data/test_scans/
 .DS_Store

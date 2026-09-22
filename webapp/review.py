@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import shutil
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 import numpy as np
@@ -64,7 +65,9 @@ def clear_case(state):
         shutil.rmtree(work, ignore_errors=True)
     for key in list(state):
         if key in ('work_dir', 'result', 'review_notes', 'review_flags', 'review_status',
-                   'finding_states', 'review_context') or key.startswith(('slice_', 'selected_', 'pending_')):
+                   'finding_states', 'review_context',
+                   'validation_present', 'validation_absent', 'validation_threshold',
+                   'validation_report_text', '_extract_keys') or key.startswith(('slice_', 'selected_', 'pending_')):
             state.pop(key, None)
 
 
@@ -84,7 +87,7 @@ def _case_id(file_name, saved_at):
 
 
 def build_case_record(result, status, shortlist, notes, finding_states=None, saved_at=None,
-                      clinical_context=None, reviewer=None):
+                      clinical_context=None, reviewer=None, validation=None):
     saved_at = saved_at or datetime.now(timezone.utc).isoformat()
     scores = {key: _safe_float(value) for key, value in result.get('scores', {}).items()}
     file_name = result.get('file_name', 'unknown_case')
@@ -98,6 +101,11 @@ def build_case_record(result, status, shortlist, notes, finding_states=None, sav
         'notes': notes or '',
         'clinical_context': clinical_context or '',
         'reviewer': reviewer or '',
+        'validation': {
+            'present': list((validation or {}).get('present', [])),
+            'absent': list((validation or {}).get('absent', [])),
+            'threshold': float((validation or {}).get('threshold', REPORT_SCORE_THRESHOLD)),
+        },
         'scores': scores,
         'example': bool(result.get('example', False)),
         'notice': 'Research use only. Model scores are not calibrated disease probabilities.',
@@ -329,4 +337,188 @@ def structured_report(record):
         '- This draft was auto-generated and requires qualified radiologist review before clinical use.',
         '- Display parameters and anatomy overlays support review only and are not diagnostic-grade.',
     ])
+    return '\n'.join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Clinical validation: compare model scores against a radiologist reference.
+# ---------------------------------------------------------------------------
+
+# Term aliases used when extracting findings from a pasted radiologist report.
+# Organ name -> alternative terms that should count as mentioning the organ.
+_ORGAN_ALIASES = {
+    'liver': {'liver', 'hepatic'},
+    'kidney': {'kidney', 'renal'},
+    'large bowel': {'large bowel', 'colon'},
+    'small bowel': {'small bowel', 'small intestine'},
+    'adrenal gland': {'adrenal'},
+    'gallbladder': {'gallbladder', 'biliary'},
+    'portal vein': {'portal vein'},
+    'heart': {'heart', 'cardiac'},
+    'lung': {'lung', 'pulmonary'},
+    'stomach': {'stomach', 'gastric'},
+    'esophagus': {'esophagus', 'oesophagus'},
+    'bladder': {'bladder'},
+    'duodenum': {'duodenum'},
+    'pancreas': {'pancreas'},
+    'spleen': {'spleen'},
+    'aorta': {'aorta'},
+}
+
+_FINDING_ALIASES = {
+    'cyst': {'cyst', 'cysts'},
+    'stone': {'stone', 'stones', 'calculus', 'calculi'},
+    'cholecystolithiasis': {'gallstone', 'gallstones', 'cholecystolithiasis'},
+    'steatotic liver disease': {'steatosis', 'fatty liver', 'steatotic'},
+    'hydronephrosis': {'hydronephrosis', 'hydro'},
+    'splenomegaly': {'splenomegaly', 'enlarged spleen'},
+    'aortic dissection': {'dissection'},
+    'aneurysm': {'aneurysm', 'aneurysms'},
+    'fracture': {'fracture', 'fractures'},
+    'diverticulum': {'diverticulosis', 'diverticulum', 'diverticula'},
+    'obstruction': {'obstruction', 'obstructing'},
+    'metastasis': {'metastasis', 'metastases'},
+    'lymphoma': {'lymphoma'},
+    'pericardial effusion': {'pericardial effusion'},
+    'pleural effusion': {'pleural effusion'},
+    'pneumothorax': {'pneumothorax'},
+    'appendicitis': {'appendicitis'},
+    'cirrhosis': {'cirrhosis'},
+    'ulcer': {'ulcer', 'ulcers'},
+}
+
+
+def match_findings_to_report(text, scores):
+    """Suggest finding keys mentioned in a radiologist report text.
+
+    A finding matches when its finding term (or an alias) appears in the
+    text. Ambiguous terms (e.g. "cyst" matches several organs) require the
+    organ to also be mentioned; unique terms (e.g. "gallstones") match on
+    their own. Results are candidates, not decisions.
+    """
+    hay = (text or '').lower()
+    labels = _finding_labels(scores)
+    key_info = []
+    for key, label in labels.items():
+        organ = label.split('/', 1)[0].strip()
+        finding = label.split('/', 1)[1].strip()
+        organ_terms = {organ.lower()} | _ORGAN_ALIASES.get(organ.lower(), set())
+        finding_terms = {finding.lower()} | _FINDING_ALIASES.get(finding.lower(), set())
+        key_info.append((key, organ, organ_terms, finding_terms))
+    term_counts = Counter()
+    for _, _, _, finding_terms in key_info:
+        for term in finding_terms:
+            term_counts[term] += 1
+    matched = []
+    for key, organ, organ_terms, finding_terms in key_info:
+        hit_terms = [term for term in finding_terms if term in hay]
+        if not hit_terms:
+            continue
+        organ_hit = any(term in hay for term in organ_terms)
+        ambiguous = any(term_counts[term] > 1 for term in hit_terms)
+        if organ_hit or not ambiguous:
+            matched.append(key)
+    return matched
+
+
+def validation_table(record, threshold=REPORT_SCORE_THRESHOLD):
+    """Per-finding agreement rows for adjudicated findings.
+
+    Reference comes from record['validation']['present'/'absent']; a model
+    prediction is positive when the score is not missing and >= threshold.
+    """
+    ref = record.get('validation', {}) or {}
+    present = set(ref.get('present', []))
+    absent = set(ref.get('absent', []))
+    adjudicated = present | absent
+    if not adjudicated:
+        return pd.DataFrame(columns=['key', 'finding', 'score', 'reference',
+                                     'predicted', 'agreement'])
+    rows = score_table(record.get('scores', {}))
+    row_lookup = rows.set_index('key').to_dict('index')
+    labels = _finding_labels(record.get('scores', {}))
+    out = []
+    for key in sorted(adjudicated):
+        row = row_lookup.get(key)
+        if row is None:
+            continue
+        score = row.get('score')
+        truth = 1 if key in present else 0
+        pred = 1 if score is not None and not pd.isna(score) and score >= threshold else 0
+        agreement = ('TP' if pred and truth else
+                     'FP' if pred and not truth else
+                     'FN' if truth and not pred else 'TN')
+        out.append({
+            'key': key,
+            'finding': labels.get(key, key),
+            'score': None if pd.isna(score) else float(score),
+            'reference': 'Present' if truth else 'Absent',
+            'predicted': 'Positive' if pred else 'Negative',
+            'agreement': agreement,
+        })
+    return pd.DataFrame(out, columns=['key', 'finding', 'score', 'reference',
+                                      'predicted', 'agreement'])
+
+
+def validation_summary(record, threshold=REPORT_SCORE_THRESHOLD):
+    """Confusion-matrix counts and derived metrics for adjudicated findings."""
+    table = validation_table(record, threshold=threshold)
+    if table.empty:
+        return {'n': 0, 'tp': 0, 'fp': 0, 'tn': 0, 'fn': 0,
+                'accuracy': None, 'sensitivity': None, 'specificity': None,
+                'precision': None, 'f1': None}
+    counts = {
+        'tp': int((table['agreement'] == 'TP').sum()),
+        'fp': int((table['agreement'] == 'FP').sum()),
+        'tn': int((table['agreement'] == 'TN').sum()),
+        'fn': int((table['agreement'] == 'FN').sum()),
+    }
+    n = len(table)
+
+    def ratio(num, den):
+        return num / den if den else None
+
+    sensitivity = ratio(counts['tp'], counts['tp'] + counts['fn'])
+    specificity = ratio(counts['tn'], counts['tn'] + counts['fp'])
+    precision = ratio(counts['tp'], counts['tp'] + counts['fp'])
+    accuracy = ratio(counts['tp'] + counts['tn'], n)
+    f1 = None
+    if sensitivity is not None and precision is not None and (sensitivity + precision):
+        f1 = 2 * sensitivity * precision / (sensitivity + precision)
+    return {'n': n, **counts, 'accuracy': accuracy, 'sensitivity': sensitivity,
+            'specificity': specificity, 'precision': precision, 'f1': f1}
+
+
+def validation_report(record, threshold=REPORT_SCORE_THRESHOLD, total_findings=146):
+    """Text summary of RADAR-vs-radiologist agreement for a case."""
+    summary = validation_summary(record, threshold=threshold)
+    table = validation_table(record, threshold=threshold)
+
+    def fmt(value):
+        return f'{value:.3f}' if value is not None else 'n/a (insufficient data)'
+
+    lines = [
+        'VALIDATION SUMMARY',
+        '------------------',
+        f'Case: {record.get("file_name", "unknown_case")}',
+        f'Adjudicated findings: {summary["n"]} (of {total_findings} predefined)',
+        f'Model prediction threshold: {threshold:.2f}',
+        '',
+        f'Agreement: TP {summary["tp"]} \u2022 FP {summary["fp"]} \u2022 '
+        f'TN {summary["tn"]} \u2022 FN {summary["fn"]}',
+        f'Accuracy: {fmt(summary["accuracy"])}',
+        f'Sensitivity (recall): {fmt(summary["sensitivity"])}',
+        f'Specificity: {fmt(summary["specificity"])}',
+        f'Precision (PPV): {fmt(summary["precision"])}',
+        f'F1: {fmt(summary["f1"])}',
+        '',
+        'Per-finding agreement:',
+    ]
+    if table.empty:
+        lines.append('  No findings adjudicated yet.')
+    else:
+        for _, row in table.iterrows():
+            score_text = 'n/a' if row['score'] is None else f'{row["score"]:.3f}'
+            lines.append(f'  {row["finding"]}: score {score_text}, '
+                         f'reference {row["reference"]}, predicted {row["predicted"]} \u2014 {row["agreement"]}')
     return '\n'.join(lines)

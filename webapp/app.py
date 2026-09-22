@@ -31,10 +31,14 @@ from review import (
     filter_findings,
     list_case_records,
     load_case_record,
+    match_findings_to_report,
     REVIEW_STATUSES,
     save_case_record,
     score_table,
     structured_report,
+    validation_report,
+    validation_summary,
+    validation_table,
     worklist_rows,
 )
 os.environ.setdefault('MODEL_ROOT', str(REPO_ROOT / 'ckpt'))
@@ -191,6 +195,10 @@ def open_saved_case(case_id):
     st.session_state.finding_states = record.get('finding_states', {})
     st.session_state.review_notes = record.get('notes', '')
     st.session_state.review_context = record.get('clinical_context', '')
+    saved_validation = record.get('validation', {}) or {}
+    st.session_state.validation_present = list(saved_validation.get('present', []))
+    st.session_state.validation_absent = list(saved_validation.get('absent', []))
+    st.session_state.validation_threshold = float(saved_validation.get('threshold', 0.5))
     st.session_state['_nav_view'] = 'Review workspace'
 
 
@@ -408,7 +416,7 @@ else:
     c.metric('Likely present', sum(1 for state in st.session_state.finding_states.values() if state == 'Likely present'))
     d.metric('Review status', st.session_state.get('review_status', 'Not started'))
     st.caption('Scores compare predefined positive and negative prompts. They are not calibrated disease probabilities.')
-    viewer, findings, review_tab = st.tabs(['Scan explorer', 'Findings', 'Review & export'])
+    viewer, findings, review_tab, validation_tab = st.tabs(['Scan explorer', 'Findings', 'Review & export', 'Validation'])
     with viewer:
         if result.get('history_only'):
             st.info('This saved review contains notes, scores, and shortlist metadata. Reopen or reanalyze the CT scan to view image slices.')
@@ -483,6 +491,11 @@ else:
             finding_states=st.session_state.finding_states,
             saved_at=datetime.now(timezone.utc).isoformat(),
             clinical_context=st.session_state.get('review_context', ''),
+            validation={
+                'present': list(st.session_state.get('validation_present', [])),
+                'absent': list(st.session_state.get('validation_absent', [])),
+                'threshold': float(st.session_state.get('validation_threshold', 0.5)),
+            },
         )
         report = structured_report(export)
         st.subheader('Structured report draft')
@@ -495,5 +508,49 @@ else:
         a.download_button('Download review JSON', json.dumps(export, indent=2, ensure_ascii=False), 'radar_review.json', 'application/json', width='stretch')
         b.download_button('Download report TXT', report, 'radar_structured_report.txt', 'text/plain', width='stretch')
         c.download_button('Download all finding scores', rows.drop(columns='key').to_csv(index=False).encode('utf-8-sig'), 'radar_all_findings.csv', 'text/csv', width='stretch')
+    with validation_tab:
+        st.subheader('Reference standard')
+        st.caption('Mark which findings the radiologist report confirms as present or absent. Agreement with model scores is computed per case and saved with the review.')
+        extracted = st.session_state.pop('_extract_keys', None)
+        if extracted is not None:
+            st.session_state.validation_present = list(extracted)
+        a, b = st.columns([1.4, 1])
+        report_text = a.text_area('Paste radiologist report', height=120, key='validation_report_text',
+                                  placeholder='Paste the report text; suggested findings fill the present list for confirmation.')
+        if b.button('Extract findings', width='stretch', disabled=not report_text.strip()):
+            st.session_state['_extract_keys'] = match_findings_to_report(report_text, result['scores'])
+            st.rerun()
+        finding_options = rows.key.tolist()
+        validation_labels = dict(zip(rows.key, rows.organ + ' / ' + rows.finding))
+        present = st.multiselect('Reference — present findings', finding_options,
+            default=st.session_state.get('validation_present', []),
+            format_func=lambda x: validation_labels.get(x, x), key='validation_present')
+        absent = st.multiselect('Reference — absent findings', finding_options,
+            default=st.session_state.get('validation_absent', []),
+            format_func=lambda x: validation_labels.get(x, x), key='validation_absent')
+        threshold = st.slider('Prediction threshold (model score)', 0.0, 1.0, 0.5, 0.05, key='validation_threshold')
+        validation_ctx = {'scores': result['scores'], 'validation': {'present': list(present), 'absent': list(absent)}}
+        vrows = validation_table(validation_ctx, threshold=float(threshold))
+        if vrows.empty:
+            st.info('Mark reference findings above (present/absent) to compute agreement with model scores.')
+        else:
+            summary = validation_summary(validation_ctx, threshold=float(threshold))
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric('Adjudicated', summary['n'])
+            m2.metric('Accuracy', f'{summary["accuracy"]:.3f}' if summary['accuracy'] is not None else '—')
+            m3.metric('Sensitivity', f'{summary["sensitivity"]:.3f}' if summary['sensitivity'] is not None else '—')
+            m4.metric('Specificity', f'{summary["specificity"]:.3f}' if summary['specificity'] is not None else '—')
+            m5.metric('F1', f'{summary["f1"]:.3f}' if summary['f1'] is not None else '—')
+            st.caption(f'TP {summary["tp"]} \u2022 FP {summary["fp"]} \u2022 TN {summary["tn"]} \u2022 FN {summary["fn"]} — computed over adjudicated findings only')
+            st.dataframe(vrows[['finding', 'score', 'reference', 'predicted', 'agreement']],
+                hide_index=True, width='stretch',
+                column_config={'finding': 'Finding', 'score': 'Model score',
+                               'reference': 'Reference', 'predicted': 'Predicted',
+                               'agreement': 'Agreement'}, height=260)
+            st.download_button('Download validation summary TXT',
+                validation_report({'scores': result['scores'], 'file_name': result['file_name'],
+                                   'validation': {'present': list(present), 'absent': list(absent)}},
+                                  threshold=float(threshold)),
+                f'{Path(result["file_name"]).stem}_validation.txt', 'text/plain')
 
 st.markdown('<div class="research-note">Research use only. Not a medical device or a diagnosis. Outputs require qualified review. Trained for contrast-enhanced abdominal CT.</div>', unsafe_allow_html=True)

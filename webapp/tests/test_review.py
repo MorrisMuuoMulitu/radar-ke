@@ -186,5 +186,64 @@ class ReviewTests(unittest.TestCase):
             self.assertFalse(Path(folder, saved['case_id'] + '.json').exists())
             self.assertFalse(review.delete_case_record(saved['case_id'], Path(folder)))
 
+    def test_match_findings_to_report_suggests_candidates(self):
+        scores = {'原文 (Liver_Cyst)': 0.8, '原文 (Gallbladder_Cholecystolithiasis)': 0.7,
+                  '原文 (Kidney_Cyst)': 0.4}
+        matched = review.match_findings_to_report('Liver cyst and gallstones noted.', scores)
+        self.assertIn('原文 (Liver_Cyst)', matched)
+        self.assertIn('原文 (Gallbladder_Cholecystolithiasis)', matched)
+        self.assertNotIn('原文 (Kidney_Cyst)', matched)
+        self.assertEqual(review.match_findings_to_report('Normal study.', scores), [])
+
+    def test_validation_table_and_summary_compute_confusion_matrix(self):
+        scores = {'原文 (Liver_Cyst)': 0.8, '原文 (Pancreas_Cyst)': 0.3,
+                  '原文 (Spleen_Cyst)': 0.9, '原文 (Kidney_Cyst)': 0.2}
+        record = {'scores': scores, 'validation': {
+            'present': ['原文 (Liver_Cyst)', '原文 (Pancreas_Cyst)'],
+            'absent': ['原文 (Spleen_Cyst)', '原文 (Kidney_Cyst)']}}
+        table = review.validation_table(record, threshold=0.5)
+        summary = review.validation_summary(record, threshold=0.5)
+        self.assertEqual(dict(table.set_index('key')['agreement']), {
+            '原文 (Liver_Cyst)': 'TP', '原文 (Pancreas_Cyst)': 'FN',
+            '原文 (Spleen_Cyst)': 'FP', '原文 (Kidney_Cyst)': 'TN'})
+        self.assertEqual(summary['n'], 4)
+        self.assertEqual(summary['tp'], 1)
+        self.assertEqual(summary['fp'], 1)
+        self.assertEqual(summary['tn'], 1)
+        self.assertEqual(summary['fn'], 1)
+        self.assertAlmostEqual(summary['accuracy'], 0.5)
+        self.assertAlmostEqual(summary['sensitivity'], 0.5)
+        self.assertAlmostEqual(summary['specificity'], 0.5)
+        self.assertAlmostEqual(summary['precision'], 0.5)
+        self.assertAlmostEqual(summary['f1'], 0.5)
+
+    def test_validation_skips_unknown_keys_and_missing_scores(self):
+        scores = {'原文 (Liver_Cyst)': 0.8, '原文 (Kidney_Cyst)': None}
+        record = {'scores': scores, 'validation': {
+            'present': ['原文 (Kidney_Cyst)', 'not_a_real_finding'],
+            'absent': []}}
+        summary = review.validation_summary(record, threshold=0.5)
+        self.assertEqual(summary['n'], 1)
+        self.assertEqual(summary['fn'], 1)  # present but score missing -> not predicted
+
+    def test_validation_report_contains_metrics_and_rows(self):
+        scores = {'原文 (Liver_Cyst)': 0.8, '原文 (Kidney_Cyst)': 0.2}
+        record = {'file_name': 'case.nii.gz', 'scores': scores, 'validation': {
+            'present': ['原文 (Liver_Cyst)'], 'absent': ['原文 (Kidney_Cyst)']}}
+        text = review.validation_report(record, threshold=0.5)
+        self.assertIn('VALIDATION SUMMARY', text)
+        self.assertIn('Accuracy:', text)
+        self.assertIn('Liver / Cyst', text)
+        self.assertIn('TP', text)
+        self.assertIn('TN', text)
+
+    def test_build_case_record_persists_validation(self):
+        record = review.build_case_record(
+            {'file_name': 'case.nii.gz', 'scores': {'原文 (Liver_Cyst)': 0.8}},
+            'Reviewed', [], '',
+            validation={'present': ['原文 (Liver_Cyst)'], 'absent': [], 'threshold': 0.6})
+        self.assertEqual(record['validation']['present'], ['原文 (Liver_Cyst)'])
+        self.assertEqual(record['validation']['threshold'], 0.6)
+
 if __name__ == '__main__':
     unittest.main()
