@@ -15,10 +15,13 @@ message, certificate-trust steps per OS, and feedback asks.
    ```bash
    docker compose -f deploy/docker-compose.yml ps      # webapp + caddy = healthy
    ```
-2. **Reachable over LAN** (both interfaces serve the auth gate → `401`):
+2. **Reachable over LAN** (each address serves the auth gate → `401`):
    ```bash
-   curl -ks --resolve radar.localhost:443:192.168.1.5 -o /dev/null -w '%{http_code}\n' https://radar.localhost/   # 401
-   curl -ks --resolve radar.localhost:443:192.168.1.7 -o /dev/null -w '%{http_code}\n' https://radar.localhost/   # 401
+   # list the host's current addresses first
+   ip -4 -o addr show | grep -v ' lo \| docker0\| br-'
+   # then check each one (replace the IPs with the current ones)
+   docker compose -f deploy/docker-compose.yml exec -T caddy \
+     wget -q -O /dev/null --no-check-certificate --server-response https://192.168.1.7/ 2>&1 | grep HTTP
    ```
 3. **Decide** the feedback channel (email / Slack / WhatsApp) and the test window.
 4. **Send each tester:** the message in Part 2 (fill the placeholders) and, to
@@ -26,12 +29,16 @@ message, certificate-trust steps per OS, and feedback asks.
 5. **Attach** [`TESTERS.md`](TESTERS.md) for the detailed walkthrough (optional).
 6. **Expect queues:** one GPU analysis at a time; a second tester waits.
 
-Current host addresses (verify with `ip -4 -o addr show`):
+**Addresses change** (DHCP, Wi-Fi vs ethernet, USB adapters), so re-check before
+sending. Update `CADDY_SITE_ADDRESSES` in `deploy/.env` and run
+`docker compose -f deploy/docker-compose.yml up -d --force-recreate caddy`
+whenever they change. Checked on 2026-09-27:
 
 | Interface | Address | Notes |
 |---|---|---|
-| `eno1` (ethernet, default route) | **192.168.1.5** | primary — use this in the invite |
-| `wlo1` (Wi-Fi) | 192.168.1.7 | works too; same LAN |
+| `enx68e43b307bcd` (USB ethernet, default route) | **192.168.1.9** | primary |
+| `wlo1` (Wi-Fi) | **192.168.1.7** | also works |
+| `radar.localhost` | 127.0.0.1 | **only on the host itself** — it never resolves for other devices |
 
 ---
 
@@ -49,21 +56,20 @@ Current host addresses (verify with `ip -4 -o addr show`):
 > is not for diagnosis. Please do **not** upload real patient data — use the
 > built-in example case and the test scans we provide.
 >
-> ### Get set up (one time, ~3 minutes)
+> ### Get set up (one time, ~1 minute)
 >
 > 1. Be on the same network as the pilot machine (or its VPN).
-> 2. Add this line to your hosts file so the address resolves:
->    ```
->    192.168.1.5   radar.localhost
->    ```
->    - Windows: `C:\Windows\System32\drivers\etc\hosts` (edit as Administrator)
->    - macOS/Linux: `/etc/hosts` (needs `sudo`)
->    - *(If the machine is on Wi-Fi instead, use `192.168.1.7`.)*
-> 3. Open **https://radar.localhost/**
+> 2. Open **https://192.168.1.9/** in your browser *(if that does not load, try
+>    `https://192.168.1.7/`)*.
 >    - The first visit shows a certificate warning (we use a private certificate
 >      for this pilot). Either click **Advanced → Proceed**, or install the
 >      attached `caddy-root.crt` once (steps in the follow-up note).
-> 4. Log in with the browser prompt:
+>    - *Optional:* add `192.168.1.9  radar.localhost` to your hosts file
+>      (Windows: `C:\Windows\System32\drivers\etc\hosts` as Administrator;
+>      macOS/Linux: `/etc/hosts` with `sudo`) and then use
+>      **https://radar.localhost/** instead. `radar.localhost` only means
+>      "this device", so it needs that entry on your machine.
+> 3. Log in with the browser prompt:
 >    - **User:** `radiologist`
 >    - **Password:** `<PASSWORD>`
 >
@@ -134,20 +140,22 @@ volume regenerates a new CA (re-extract with the command in `deploy/README.md`).
 
 ---
 
-## Part 4 — Optional: remove the hosts-file requirement
+## Part 4 — Addresses and hosts file (already handled)
 
-Testers currently must add the `radar.localhost` hosts entry because the Caddy
-site block is bound to that hostname (a bare-IP URL fails the TLS handshake).
-To let testers open `https://192.168.1.5/` directly (clicking through the cert
-warning, no hosts edit), add the LAN IP as a second site address in
-`deploy/Caddyfile`:
+LAN devices cannot use `radar.localhost` — that name is reserved to mean "this
+device", so it only resolves on the host itself. Caddy is therefore configured
+to answer on the host's LAN IPs too, via `CADDY_SITE_ADDRESSES` in
+`deploy/.env`:
 
-```caddyfile
-{$CADDY_DOMAIN}, https://192.168.1.5 {
-  tls internal
-  ...
-}
+```
+CADDY_SITE_ADDRESSES=radar.localhost, https://192.168.1.9, https://192.168.1.7
 ```
 
-Then `docker compose -f deploy/docker-compose.yml up -d caddy`. Ask the
-maintainer to apply this if testers can't edit their hosts file.
+Testers just open one of the IP addresses (accepting the certificate warning
+once); no hosts-file edit is required. If the host's addresses change (DHCP,
+Wi-Fi vs ethernet, USB adapters), re-check with `ip -4 -o addr show`, update
+`CADDY_SITE_ADDRESSES`, and run
+`docker compose -f deploy/docker-compose.yml up -d --force-recreate caddy`.
+
+For the cloud path (B), set `CADDY_SITE_ADDRESSES` to the real domain only and
+delete the `tls internal` line in `deploy/Caddyfile`.

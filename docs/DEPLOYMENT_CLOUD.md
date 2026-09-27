@@ -50,9 +50,9 @@ Recommended spec: **≥ 16 GB VRAM**, 4 vCPU, 16 GB RAM, 100 GB+ disk
    ```bash
    cp deploy/.env.example deploy/.env
    # deploy/.env:
-   #   CADDY_DOMAIN=radar.example.com
-   #   CADDY_EMAIL=you@example.com     (for Let's Encrypt)
-   #   RADAR_AUTH_USER=... RADAR_AUTH_HASH=...   (deploy/hash-password.sh)
+   #   CADDY_SITE_ADDRESSES=radar.example.com   (the real domain only)
+   #   CADDY_EMAIL=you@example.com              (for Let's Encrypt)
+   #   RADAR_AUTH_USER=... RADAR_AUTH_HASH=...  (deploy/hash-password.sh)
    ```
 
    Edit `deploy/Caddyfile`: **remove the `tls internal` line** so Caddy

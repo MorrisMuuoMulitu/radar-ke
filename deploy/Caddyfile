@@ -1,17 +1,23 @@
 # RADAR Kenya — protected reverse proxy (Caddy).
 # Deployed by deploy/docker-compose.yml. Values are injected from deploy/.env.
 #
-# LAN/VPN pilot (default): self-signed TLS via `tls internal`. Testers must
-# accept the certificate once. For a real public domain (cloud path B), set
-# CADDY_DOMAIN + CADDY_EMAIL in .env and delete the `tls internal` line —
-# Caddy will then provision Let's Encrypt certificates automatically.
+# CADDY_SITE_ADDRESSES lists every address the proxy answers on, space- or
+# comma-separated, e.g.
+#   radar.localhost, https://192.168.1.5, https://192.168.1.7
+# (`radar.localhost` only resolves on the host itself, so LAN devices — phones,
+# laptops — must use the IP addresses. Caddy serves HTTPS on each address.)
+#
+# LAN/VPN pilot (default): self-signed TLS via `tls internal`, so testers accept
+# the certificate once. For a real public domain (cloud path B), set
+# CADDY_SITE_ADDRESSES to just that domain, set CADDY_EMAIL, and delete the
+# `tls internal` line — Caddy then provisions Let's Encrypt automatically.
 # (The `basicauth` deprecation warning on `caddy validate` is cosmetic; the
 # directive is fully functional. See deploy/hash-password.sh for the hash.)
 {
   email {env.CADDY_EMAIL}
 }
 
-{$CADDY_DOMAIN} {
+{$CADDY_SITE_ADDRESSES} {
   tls internal
 
   basicauth {

@@ -31,7 +31,8 @@ Get the Docker-based pilot stack **running and verified on this machine**:
     placeholders; validated against `caddy:2`.
   - `deploy/.env` — ALREADY configured by the user:
     `RADAR_AUTH_USER=radiologist`, `RADAR_AUTH_HASH=<bcrypt hash, $$-escaped>`,
-    `CADDY_DOMAIN=radar.localhost`. **Do not regenerate or "fix" this hash.**
+    `CADDY_SITE_ADDRESSES=radar.localhost, https://<lan-ip>`. **Do not
+    regenerate or "fix" this hash.**
   - `deploy/.env.example`, `deploy/hash-password.sh`, `deploy/README.md`,
     `deploy/TESTERS.md`, `docs/DEPLOYMENT_CLOUD.md`.
 - Checkpoints present: `ckpt/checkpoint_radar_pretrain.pth` and friends.

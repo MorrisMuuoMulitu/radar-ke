@@ -49,8 +49,12 @@ deploy/hash-password.sh 'choose-a-strong-password'   # prints the bcrypt hash
 
 Edit `deploy/.env`:
 
-- `CADDY_DOMAIN` — for LAN testing keep `radar.localhost` (or the host IP /
-  a name that resolves to this machine); TLS will be self-signed.
+- `CADDY_SITE_ADDRESSES` — every address the proxy answers on, comma-separated.
+  For LAN testing include the host's current LAN IPs (find them with
+  `ip -4 -o addr show`), e.g.
+  `radar.localhost, https://192.168.1.9, https://192.168.1.7`. `radar.localhost`
+  only resolves on the host itself, so LAN devices need an IP address. TLS is
+  self-signed for the pilot.
 - `RADAR_AUTH_USER` / `RADAR_AUTH_HASH` — the shared tester login.
 
 ## 3. Build and start

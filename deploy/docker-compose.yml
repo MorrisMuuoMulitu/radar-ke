@@ -59,7 +59,9 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      CADDY_DOMAIN: ${CADDY_DOMAIN:-radar.localhost}
+      # Every address the proxy answers on (comma-separated). Include the host's
+      # LAN IPs so phones/laptops can reach it without editing their hosts file.
+      CADDY_SITE_ADDRESSES: ${CADDY_SITE_ADDRESSES:-radar.localhost}
       RADAR_AUTH_USER: ${RADAR_AUTH_USER:-radiologist}
       RADAR_AUTH_HASH: ${RADAR_AUTH_HASH:?set RADAR_AUTH_HASH in deploy/.env — see deploy/README.md}
     volumes:
