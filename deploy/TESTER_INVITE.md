@@ -61,14 +61,14 @@ whenever they change. Checked on 2026-09-27:
 > 1. Be on the same network as the pilot machine (or its VPN).
 > 2. Open **https://192.168.1.9/** in your browser *(if that does not load, try
 >    `https://192.168.1.7/`)*.
->    - The first visit shows a certificate warning (we use a private certificate
->      for this pilot). Either click **Advanced → Proceed**, or install the
->      attached `caddy-root.crt` once (steps in the follow-up note).
->    - *Optional:* add `192.168.1.9  radar.localhost` to your hosts file
->      (Windows: `C:\Windows\System32\drivers\etc\hosts` as Administrator;
->      macOS/Linux: `/etc/hosts` with `sudo`) and then use
->      **https://radar.localhost/** instead. `radar.localhost` only means
->      "this device", so it needs that entry on your machine.
+>    - Because the address is a bare IP, the browser warns that the certificate
+>      name does not match — click **Advanced → Proceed to 192.168.1.9 (unsafe)**.
+>      The connection is still encrypted; this is our private pilot certificate.
+>    - **Warning-free alternative:** add `192.168.1.9  radar.localhost` to your
+>      hosts file (Windows: `C:\Windows\System32\drivers\etc\hosts` as
+>      Administrator; macOS/Linux: `/etc/hosts` with `sudo`) and open
+>      **https://radar.localhost/** — the certificate matches that name, so with
+>      the attached `caddy-root.crt` installed you get a clean padlock.
 > 3. Log in with the browser prompt:
 >    - **User:** `radiologist`
 >    - **Password:** `<PASSWORD>`

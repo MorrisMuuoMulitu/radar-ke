@@ -15,6 +15,12 @@
 # directive is fully functional. See deploy/hash-password.sh for the hash.)
 {
   email {env.CADDY_EMAIL}
+  # Clients (browsers, curl) never send SNI for a bare IP address, and Caddy
+  # needs SNI to choose a certificate — without this it aborts the handshake
+  # with a TLS internal_error (browser: ERR_SSL_PROTOCOL_ERROR). Falling back to
+  # the hostname certificate lets IP-based URLs work (with a one-click
+  # certificate-name warning); use the hostname URL for a warning-free setup.
+  default_sni {$CADDY_DEFAULT_SNI}
 }
 
 {$CADDY_SITE_ADDRESSES} {
@@ -22,6 +28,13 @@
 
   basicauth {
     {$RADAR_AUTH_USER} {$RADAR_AUTH_HASH}
+  }
+
+  # Access log: shows which client addresses actually reach the proxy (useful
+  # when debugging "device cannot connect" reports). No scan data is logged.
+  log {
+    output stdout
+    format console
   }
 
   reverse_proxy webapp:8501

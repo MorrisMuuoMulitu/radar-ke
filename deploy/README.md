@@ -71,13 +71,23 @@ analysis triggers segmentation + scoring on the GPU).
 
 ## 4. Testers connect
 
-- **LAN**: `https://<host-ip-or-radar.localhost>` — accept the self-signed
-  certificate once, then log in with the basic-auth credentials.
+- **LAN (IP address)**: `https://<host-ip>` — works, but the browser shows a
+  certificate **name** warning (the default certificate is for the hostname),
+  which you click through once.
+- **LAN (hostname, warning-free)**: add `<host-ip> radar.localhost` to the
+  device's hosts file and use `https://radar.localhost` — with
+  `deploy/tls/caddy-root.crt` trusted you get a clean padlock.
 - **VPN** (Tailscale/ZeroTier): give testers the machine's VPN IP; no public
   ports are opened.
 - Give each tester [deploy/TESTERS.md](TESTERS.md).
 - Ready-to-send invite message, admin checklist and per-OS certificate steps:
   [deploy/TESTER_INVITE.md](TESTER_INVITE.md).
+
+> **Why IP URLs warn:** browsers and curl omit SNI (server name) when the URL is
+> a bare IP, and Caddy needs SNI to pick a certificate. `CADDY_DEFAULT_SNI` in
+> `.env` supplies a fallback so those connections succeed at all (without it
+> they fail with `ERR_SSL_PROTOCOL_ERROR`); the fallback certificate naturally
+> does not match the IP, hence the click-through.
 
 ### TLS certificate (recommended: trust the local CA)
 
