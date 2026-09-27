@@ -139,6 +139,7 @@ docker compose -f deploy/docker-compose.yml down -v           # stop + delete da
 | `webapp` exits: no GPU device | Install nvidia-container-toolkit + restart docker (step 1). |
 | CUDA OOM during analysis | Automatic on ≤10 GB GPUs (compact windows). On 8 GB cards it is expected and handled. |
 | Slow analysis (CPU) | Container sees no GPU — same fix as the first row, or run on a GPU host. |
+| Analysis suddenly very slow, `cuda: False` in the container, but the host GPU is fine | The host kernel/NVIDIA driver was updated while the container was running, so it holds stale GPU device state. Recreate it: `docker compose -f deploy/docker-compose.yml up -d --force-recreate webapp`, then verify `docker compose -f deploy/docker-compose.yml exec -T webapp python3 -c "import torch; print(torch.cuda.is_available())"` → `True`. (Recurs after most kernel updates.) |
 | `RADAR_AUTH_HASH: ... is required` | Set it in `deploy/.env` (step 2). |
 | Self-signed warning in browser | Expected for LAN; accept once, or use a VPN IP + `tls internal`. |
 | Ports already in use | Change the `ports` mapping in `deploy/docker-compose.yml` (e.g. `8443:443`). |
