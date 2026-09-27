@@ -416,11 +416,15 @@ def evaluate(pad_func, model, img_dir, save_dir, save_tag, collect_cases=False, 
     """
 
     datafolder = DataFolder(img_dir)
+    # Worker processes pass full CT volumes between each other via /dev/shm, so
+    # keep the count small (override with RADAR_NUM_WORKERS). The original 12
+    # exhausted memory/swap on folder-mode runs.
+    num_workers = max(0, int(os.environ.get('RADAR_NUM_WORKERS', '2')))
     dataloader = DataLoader(
         datafolder,
         batch_size=1,
         shuffle=False,
-        num_workers=12,
+        num_workers=num_workers,
         drop_last=False,
         collate_fn=collate_fn
     )
@@ -482,7 +486,7 @@ def evaluate(pad_func, model, img_dir, save_dir, save_tag, collect_cases=False, 
                 for idx in slice_range
             ]
             
-            window_patches = torch.cat([image[win_slice] for win_slice in unravel_slice]).to(_infer_device())
+            window_patches = torch.cat([image[tuple(win_slice)] for win_slice in unravel_slice]).to(_infer_device())
 
             organ_logits, pred_window_seg_prob = model.forward_test_win(
                 window_patches, 
@@ -499,8 +503,8 @@ def evaluate(pad_func, model, img_dir, save_dir, save_tag, collect_cases=False, 
             
             for ii, slice_idx in enumerate(slice_range):
                 full_slice = unravel_slice[ii]
-                full_mask[full_slice] += interpolated_seg_prob[ii]
-                count_map[full_slice] += 1
+                full_mask[tuple(full_slice)] += interpolated_seg_prob[ii]
+                count_map[tuple(full_slice)] += 1
         
         # Avoid division by zero by ensuring count_map is at least 1 everywhere
         count_map = torch.clamp(count_map, min=1)

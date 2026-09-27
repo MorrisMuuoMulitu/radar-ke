@@ -146,16 +146,21 @@ mkdir -p deploy/smoke-out
 docker compose run --rm --no-deps \
   -v "$PWD/data/test_scans/ct_org/volumes:/test_scans:ro" \
   -v "$PWD/deploy/smoke-out:/app/smoke-out" \
-  webapp python /app/RADAR_inference/inference_demo.py \
+  webapp python3 /app/RADAR_inference/inference_demo.py \
   --img_dir /test_scans --save_dir /app/smoke-out --save_tag container_smoke
 ```
+
+> Note: the image ships `python3` (there is no `python`). Use `python3` for any
+> in-container invocation.
 
 - **Gate:** exit 0, and `deploy/smoke-out/RADAR_infer_results_container_smoke.csv`
   exists with one row per scan + non-empty scores. Time: several minutes on the
   GPU (compact windows).
-- If this step fails with CUDA OOM, retry with `ROI_SIZE=64,192,288` env passed
-  to the run; if it still fails, record it as a caveat (not necessarily a
-  deployment blocker) and continue to the report.
+- If this step fails with CUDA OOM or host memory pressure, retry with
+  `-e ROI_SIZE=64,192,288 -e RADAR_NUM_WORKERS=1` added to the run (the default
+  worker count is 2); if it still fails, record it as a caveat (not necessarily
+  a deployment blocker) and continue to the report. Prefer one scan per run on
+  memory-constrained hosts.
 
 ### Phase 6 — Report
 Write `DEPLOYMENT_REPORT.md` at the repo root with EXACTLY these sections:

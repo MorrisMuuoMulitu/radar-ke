@@ -222,12 +222,13 @@ Then open <http://127.0.0.1:8501>.
 Behavior notes:
 
 - **GPU auto-detection**: with CUDA available the app uses the GPU (on ≤ 10 GB VRAM GPUs it automatically selects compact inference windows via `ROI_SIZE=64,192,288` and `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` to avoid OOM). Without CUDA it falls back to CPU mode — functional but very slow for full scans (tens of minutes to hours).
+- **Inference workers**: the dataloader worker count defaults to 2 (`RADAR_NUM_WORKERS` to override). Keep it low on memory-constrained hosts — multi-scan runs load whole CT volumes per worker.
 - Uploads are processed locally; temporary files live under the system temp dir (`radar_web_*`) and are removed via **Clear case and delete uploads**.
-- If the host GPU is present but the app reports *"No CUDA GPU detected"*, the process likely lacks access to `/dev/nvidia*` (e.g. inside a restricted sandbox/container) — relaunch with GPU device access.
+- If the host GPU is present but the app reports *"No CUDA GPU detected"*, the process likely lacks access to `/dev/nvidia*` (e.g. inside a restricted sandbox/container, or after a host kernel/driver update) — relaunch with GPU device access; for the Docker pilot, `docker compose -f deploy/docker-compose.yml up -d --force-recreate webapp`.
 
 ## Case History Data
 
-Saved reviews are stored as JSON under `~/.radar_ke/cases` (override with the `RADAR_CASE_HISTORY_DIR` environment variable). Each snapshot contains: case id, file name, saved timestamp, review status, shortlist, finding review states, reviewer notes, clinical context, reviewer name, validation adjudication (present/absent/threshold), finding scores, and the example flag. **Volumes/pixels are not archived** — reopening a saved case shows the review metadata; image slices require reopening or reanalyzing the scan.
+Saved reviews are stored as JSON under `~/.radar_ke/cases` (override with the `RADAR_CASE_HISTORY_DIR` environment variable). The Docker pilot bind-mounts this same host directory to `/data/cases`, so reviews saved in the dev instance and the pilot share one store. Each snapshot contains: case id, file name, saved timestamp, review status, shortlist, finding review states, reviewer notes, clinical context, reviewer name, validation adjudication (present/absent/threshold), finding scores, and the example flag. **Volumes/pixels are not archived** — reopening a saved case shows the review metadata; image slices require reopening or reanalyzing the scan.
 
 ## Docker
 

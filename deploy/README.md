@@ -110,15 +110,23 @@ docker compose -f deploy/docker-compose.yml down -v           # stop + delete da
 
 ## 6. Data
 
-- Saved reviews, uploads, and HF cache live in the `radar-ke_radar-data`
-  named volume (`/data` in the container). It survives restarts and `down`.
-- Backup:
+- **Saved reviews (case history)** live in the host directory
+  `~/.radar_ke/cases`, bind-mounted to `/data/cases` in the container — the same
+  store the local dev instance uses, so reviews saved in either place appear in
+  both. Override with `RADAR_CASE_HISTORY_DIR` in the service environment.
+- Uploads and the Hugging Face cache live in the `radar-ke_radar-data` named
+  volume (`/data` in the container). It survives restarts and `down`.
+- Backup (case history + volume):
 
   ```bash
+  cp -a ~/.radar_ke/cases ~/radar-cases-backup-$(date +%F)
   docker run --rm -v radar-ke_radar-data:/data -v "$PWD/backup:/backup" \
     alpine tar czf /backup/radar-data-$(date +%F).tar.gz -C /data .
   ```
 
+- **Inference memory:** the DataLoader worker count defaults to **2**
+  (override with `RADAR_NUM_WORKERS`). The original value (12) exhausted RAM and
+  swap on folder/multi-scan runs; single-case analysis is unaffected.
 - **Privacy:** keep real patient data out of the pilot. Use the bundled
   example and the public CT-ORG sample (`data/test_scans/`, see root README).
 - Model weights are mounted read-only from `./ckpt`; they are not copied
