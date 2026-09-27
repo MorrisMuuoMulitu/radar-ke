@@ -102,5 +102,23 @@ class WorkspaceTests(unittest.TestCase):
             finally:
                 os.environ.pop('RADAR_CASE_HISTORY_DIR', None)
 
+    def test_cine_clip_generation_from_viewer(self):
+        app = AppTest.from_file(str(APP), default_timeout=60)
+        app.session_state['result'] = {'file_name': 'clip_case.nii.gz', 'example': True,
+            'image': np.random.default_rng(0).random((8, 16, 20)).astype(np.float32),
+            'mask': None, 'display_mode': 'normalized',
+            'scores': {'原文 (Liver_Cyst)': 0.8}}
+        app.run()
+        self.assertFalse(app.exception)
+        self.assertTrue(any('Cine clip' in e.label for e in app.expander))
+        next(b for b in app.button if b.label == 'Generate clip').click().run()
+        clip = app.session_state.get('clip')
+        self.assertIsNotNone(clip)
+        self.assertEqual(clip['frames'], 8)                 # default sweep = all 8 slices on this axis
+        self.assertIn(clip['ext'], ('gif', 'mp4'))
+        self.assertGreater(len(clip['data']), 0)
+        self.assertTrue(any(b.label.startswith('Download clip') for b in app.download_button))
+        self.assertFalse(app.exception)
+
 if __name__ == '__main__':
     unittest.main()

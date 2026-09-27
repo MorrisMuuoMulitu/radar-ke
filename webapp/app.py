@@ -41,6 +41,14 @@ from review import (
     validation_table,
     worklist_rows,
 )
+from cine import (
+    DEFAULT_FPS,
+    build_clip,
+    ffmpeg_available,
+    render_frames,
+    render_slice,
+    sweep_range,
+)
 os.environ.setdefault('MODEL_ROOT', str(REPO_ROOT / 'ckpt'))
 os.environ.setdefault('CONFIGS_ROOT', str(REPO_ROOT / 'ckpt'))
 os.environ.setdefault('HF_HOME', str(Path(tempfile.gettempdir()) / 'radar_hf'))
@@ -203,18 +211,9 @@ def open_saved_case(case_id):
 
 
 def slice_rgb(image, mask, axis, index, display_mode, window_level, window_width, overlay, opacity, selected):
-    gray = np.take(image, index, axis=axis)
-    if display_mode == 'hu':
-        gray = apply_window(gray, window_level, window_width)
-    else:
-        gray = np.clip(gray, 0, 1)
-    rgb = np.repeat(gray[..., None], 3, axis=-1)
-    if overlay and mask is not None:
-        labels = np.take(mask, index, axis=axis)
-        keep = labels > 0 if selected == 0 else labels == selected
-        colors = colormaps['turbo'](labels / 36)[..., :3]
-        rgb[keep] = rgb[keep] * (1 - opacity) + colors[keep] * opacity
-    return (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
+    """Single-plane frame render (delegates to the shared cine renderer)."""
+    return render_slice(image, mask, axis, index, display_mode, window_level,
+                        window_width, overlay, opacity, selected)
 
 
 def show_viewer(result):
@@ -276,6 +275,62 @@ def show_viewer(result):
                                    'image/png', key=f'png_{axis}')
         st.caption(f'Volume dimensions: {image.shape[0]} × {image.shape[1]} × {image.shape[2]} voxels' +
                    (f' • {len(present)} segmented structures' if mask is not None else ''))
+        show_cine_clip(result, image, mask, display_mode, window_level, window_width, overlay, opacity, selected, names)
+
+
+def show_cine_clip(result, image, mask, display_mode, window_level, window_width, overlay, opacity, selected, names):
+    """Render a scrolling cine loop and offer it as a shareable clip (MP4 or GIF)."""
+    with st.expander('Cine clip — share a scrolling video'):
+        st.caption('CT is a serial stack; a cine loop is the natural way to share it. '
+                   'Research use only — verify de-identification before sharing (chat apps are not a secure clinical channel).')
+        if result.get('history_only'):
+            st.info('This saved review has no volume pixels. Reopen or reanalyze the scan to generate a clip.')
+            return
+        a, b, c = st.columns([1, 1.2, 1])
+        axis_name = a.selectbox('Plane', names, key='clip_plane')
+        axis = names.index(axis_name)
+        length = image.shape[axis]
+        center = st.session_state.get(f'slice_{axis}', length // 2)
+        default_start, default_end, _ = sweep_range(length, center=center)
+        slice_range = b.slider('Slice range', 0, max(0, length - 1), (default_start, default_end), key='clip_range')
+        fps = c.slider('Frames per second', 6, 24, DEFAULT_FPS, key='clip_fps')
+        a, b, c = st.columns([1, 1, 1])
+        scale_label = a.selectbox('Resolution', ['50% (smaller file)', '100%'], key='clip_scale')
+        whole = b.checkbox('Whole volume', key='clip_whole',
+                           help='Ignore the slice range and sweep the entire volume.')
+        generate = c.button('Generate clip', width='stretch', key='clip_generate')
+        if generate:
+            start, end = (0, length - 1) if whole else slice_range
+            with st.spinner('Rendering frames…'):
+                frames = render_frames(
+                    image, mask, axis, start, end, 1,
+                    display_mode=display_mode, window_level=window_level, window_width=window_width,
+                    overlay=overlay, opacity=opacity, selected=selected,
+                    scale=0.5 if scale_label.startswith('50') else 1.0,
+                )
+                data, extension, mime = build_clip(frames, int(fps))
+            st.session_state.clip = {
+                'data': data, 'ext': extension, 'mime': mime, 'frames': len(frames),
+                'plane': axis_name, 'range': (int(start), int(end)),
+                'size': frames[0].shape[:2] if frames else None,
+            }
+        clip = st.session_state.get('clip')
+        if clip:
+            height, width = clip['size'] if clip['size'] else (0, 0)
+            encoder = 'H.264 MP4' if clip['ext'] == 'mp4' else 'animated GIF (install ffmpeg for MP4)'
+            st.caption(f"{clip['frames']} frames • {width}×{height} • {len(clip['data']) / 1e6:.1f} MB • "
+                       f"{clip['plane']} {clip['range'][0] + 1}–{clip['range'][1] + 1} • {encoder}")
+            if clip['mime'] == 'video/mp4':
+                st.video(clip['data'], format='video/mp4')
+            else:
+                st.image(clip['data'])
+            st.download_button(
+                f"Download clip (.{clip['ext']})", clip['data'],
+                f"{Path(result['file_name']).stem}_{clip['plane'].lower()}.{clip['ext']}",
+                clip['mime'], key='clip_download',
+            )
+        elif not ffmpeg_available():
+            st.caption('MP4 encoding needs ffmpeg; clips will be generated as animated GIF until it is installed.')
 
 
 def show_worklist():

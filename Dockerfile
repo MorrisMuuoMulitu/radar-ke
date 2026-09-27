@@ -15,11 +15,20 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt "numpy<2"
 
+# ffmpeg powers H.264 cine-clip export (browser- and WhatsApp-friendly MP4).
+# Kept in its own layer after pip so code changes reuse the dependency cache.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY RADAR_train RADAR_train
 COPY RADAR_inference RADAR_inference
 COPY webapp webapp
 COPY .streamlit .streamlit
 COPY download_scripts download_scripts
+
+# Files created with restrictive modes on the host (e.g. 600) must still be
+# readable by the non-root runtime user, otherwise imports fail at session start.
+RUN chmod -R a+rX /app
 
 # Checkpoints + BERT dirs are large: mount them, do not bake in.
 #   -v /host/ckpt:/app/ckpt   (compose mounts ./ckpt read-only)
@@ -33,8 +42,11 @@ RUN useradd --create-home --uid 1000 radar \
 USER radar
 
 EXPOSE 8501
+# Also import the app modules: a permission/import fault must fail the health
+# check, not just look healthy while every session crashes.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
-    CMD python3 -c "import urllib.request,sys; \
+    CMD python3 -c "import sys, urllib.request; \
+sys.path.insert(0, '/app/webapp'); import cine, review; \
 sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3).status == 200 else 1)" \
     || exit 1
 

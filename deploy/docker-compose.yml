@@ -41,8 +41,10 @@ services:
     expose:
       - "8501"
     healthcheck:
+      # Also import the app modules so a permission/import fault fails the
+      # health check instead of only breaking every user session.
       test: ["CMD", "python3", "-c",
-             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3).status == 200 else 1)"]
+             "import sys, urllib.request; sys.path.insert(0, '/app/webapp'); import cine, review; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3).status == 200 else 1)"]
       interval: 30s
       timeout: 5s
       start_period: 180s

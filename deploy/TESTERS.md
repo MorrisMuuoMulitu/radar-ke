@@ -9,6 +9,10 @@ the example case (or ask for a test scan).
 1. **Example case** — click `Open example case` in the sidebar (instant, no GPU wait).
    - Scan explorer: switch Layout / plane, try Window presets (Abdomen, Liver, Bone…),
      use Previous/Next slice, enable the organ overlay, save a slice PNG.
+   - **Cine clip**: open *Cine clip — share a scrolling video*, pick a plane and slice
+     range (or *Whole volume*), then `Generate clip` → play it in-app and download the
+     MP4/GIF to share with colleagues. CT is a serial stack, so a clip is the natural
+     way to show someone what you are seeing. Please share de-identified clips only.
    - Findings: search (e.g. `liver`, `cyst`, `calcification`), filter by anatomy,
      move the score threshold, export CSV.
 2. **Analyze a scan** (if you have a `.nii` / `.nii.gz` / DICOM zip):

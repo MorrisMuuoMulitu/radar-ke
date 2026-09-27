@@ -65,9 +65,9 @@ def clear_case(state):
         shutil.rmtree(work, ignore_errors=True)
     for key in list(state):
         if key in ('work_dir', 'result', 'review_notes', 'review_flags', 'review_status',
-                   'finding_states', 'review_context',
+                   'finding_states', 'review_context', 'clip',
                    'validation_present', 'validation_absent', 'validation_threshold',
-                   'validation_report_text', '_extract_keys') or key.startswith(('slice_', 'selected_', 'pending_')):
+                   'validation_report_text', '_extract_keys') or key.startswith(('slice_', 'selected_', 'pending_', 'clip_')):
             state.pop(key, None)
 
 

@@ -28,7 +28,7 @@ Model checkpoints are not committed — see [Model Files](#model-files).
 ## Feature Overview
 
 - **Case workspace** — upload a CT scan (NIfTI or DICOM zip), run RADAR inference (GPU, with a CPU fallback), or open the bundled example case instantly.
-- **Three-plane volume explorer** — axial / coronal / sagittal views, radiology CT window presets (Abdomen, Liver, Soft tissue, Lung, Bone) with level/width controls, slice stepping, organ segmentation overlays, and finding→anatomy navigation jumps.
+- **Three-plane volume explorer** — axial / coronal / sagittal views, radiology CT window presets (Abdomen, Liver, Soft tissue, Lung, Bone) with level/width controls, slice stepping, organ segmentation overlays, finding→anatomy navigation jumps, and **cine clips** (shareable scrolling MP4/GIF videos).
 - **Finding explorer** — 146 predefined finding scores with search, anatomy filtering, score thresholding, sorting, and CSV export.
 - **Review notebook** — per-finding review states (`Needs review`, `Likely present`, `Likely absent`, `Ignore`), shortlist for follow-up, review status (`Not started`, `In progress`, `Reviewed`), clinical context / indication, reviewer notes, and export of review JSON, report text, and all finding scores.
 - **Radiology-style report draft** — auto-generated with `Clinical context`, `Findings by organ`, `Impression`, `Review summary`, `Reviewer notes`, and `Review limitations` sections.
@@ -58,6 +58,7 @@ Fresh analyses save a HU display volume aligned to the model output when possibl
 - **Window presets**: Abdomen (60/400), Liver (70/150), Soft tissue (40/350), Lung (−600/1500), Bone (300/1500) — level and width are adjustable.
 - Previous/next slice stepping, per-plane slice sliders, and PNG export of any slice.
 - **Organ overlay**: highlights the 36 segmented anatomy structures (turbo colormap) with adjustable opacity; center the view on any segmented organ.
+- **Cine clip (share a scrolling video)**: CT is a serial stack, so clips are the natural way to share a study. Pick a plane, slice range (or *Whole volume*), fps, and resolution; the app renders frames with the current window preset and overlay, then encodes a **H.264 MP4** (in-app player + download) or an **animated GIF** when ffmpeg is unavailable. Encoded with `webapp/cine.py`; the Docker image includes ffmpeg, and for a local venv install it with `sudo apt install ffmpeg`. Research use only — verify de-identification before sharing, since chat apps are not a secure clinical channel.
 - The example case displays normalized data (no true HU windowing) unless it is reanalyzed; fresh analyses store HU display volumes.
 
 ### 3. Findings
