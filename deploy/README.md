@@ -161,9 +161,11 @@ docker compose -f deploy/docker-compose.yml down -v           # stop + delete da
 | `webapp` exits: no GPU device | Install nvidia-container-toolkit + restart docker (step 1). |
 | CUDA OOM during analysis | Automatic on ≤10 GB GPUs (compact windows). On 8 GB cards it is expected and handled. |
 | Slow analysis (CPU) | Container sees no GPU — same fix as the first row, or run on a GPU host. |
-| Analysis suddenly very slow, `cuda: False` in the container, but the host GPU is fine | The host kernel/NVIDIA driver was updated while the container was running, so it holds stale GPU device state. Recreate it: `docker compose -f deploy/docker-compose.yml up -d --force-recreate webapp`, then verify `docker compose -f deploy/docker-compose.yml exec -T webapp python3 -c "import torch; print(torch.cuda.is_available())"` → `True`. (Recurs after most kernel updates.) |
+| Analysis suddenly very slow, `cuda: False` in the container, but the host GPU is fine | The NVIDIA driver was updated **while the container was running**, so it holds stale GPU device state. Recreate it: `docker compose -f deploy/docker-compose.yml up -d --force-recreate webapp`, then verify `docker compose -f deploy/docker-compose.yml exec -T webapp python3 -c "import torch; print(torch.cuda.is_available())"` → `True`. A clean host **reboot** does not need this: `restart: unless-stopped` brings the stack back with working GPU access. |
 | `RADAR_AUTH_HASH: ... is required` | Set it in `deploy/.env` (step 2). |
-| Self-signed warning in browser | Expected for LAN; accept once, or use a VPN IP + `tls internal`. |
+| Device cannot connect at all (`ERR_SSL_PROTOCOL_ERROR`, `tlsv1 alert internal error`) | Bare-IP URLs need a fallback certificate: `CADDY_DEFAULT_SNI` must be set in `deploy/.env` (default `radar.localhost`). See step 4. |
+| Device connects but the address is wrong / times out | The host's LAN IP changed (DHCP, Wi-Fi vs ethernet, USB adapters). Check `ip -4 -o addr show`, update `CADDY_SITE_ADDRESSES`, and run `docker compose -f deploy/docker-compose.yml up -d --force-recreate caddy`. |
+| Self-signed / name-mismatch warning in browser | Expected for LAN, especially on bare-IP URLs; accept once, or use the hostname + trusted `deploy/tls/caddy-root.crt`. |
 | Ports already in use | Change the `ports` mapping in `deploy/docker-compose.yml` (e.g. `8443:443`). |
 
 Cloud/path B: see [docs/DEPLOYMENT_CLOUD.md](../docs/DEPLOYMENT_CLOUD.md).
