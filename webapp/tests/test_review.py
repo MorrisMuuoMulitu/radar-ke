@@ -245,5 +245,50 @@ class ReviewTests(unittest.TestCase):
         self.assertEqual(record['validation']['present'], ['原文 (Liver_Cyst)'])
         self.assertEqual(record['validation']['threshold'], 0.6)
 
+    def test_extract_reference_splits_negated_and_clause_attributed_findings(self):
+        """Real report phrasings: negation must not leak across organs."""
+        scores = {'原文 (Small bowel_Obstruction)': 0.4, '原文 (Large bowel_Obstruction)': 0.3,
+                  '原文 (Kidney_Hydronephrosis)': 0.2}
+        text = ('Small Bowel: consistent with a mechanical small-bowel obstruction. '
+                'Large Bowel: No focal large-bowel obstruction identified. '
+                'Kidneys: preserved morphology without hydronephrosis.')
+        ref = review.extract_reference(text, scores)
+        self.assertIn('原文 (Small bowel_Obstruction)', ref['present'])
+        self.assertIn('原文 (Large bowel_Obstruction)', ref['absent'])
+        self.assertIn('原文 (Kidney_Hydronephrosis)', ref['absent'])
+        self.assertNotIn('原文 (Large bowel_Obstruction)', ref['present'])
+        # present-only helper must exclude negated findings
+        present_only = review.match_findings_to_report(text, scores)
+        self.assertEqual(present_only, ['原文 (Small bowel_Obstruction)'])
+
+    def test_extract_reference_uses_word_boundaries(self):
+        """'gallbladder'/'gallstones' must not trigger bladder findings."""
+        scores = {'原文 (Bladder_Stone)': 0.2, '原文 (Gallbladder_Cholecystolithiasis)': 0.9,
+                  '原文 (Kidney_Nephrolithiasis)': 0.3}
+        ref = review.extract_reference('Gallbladder: No calcified gallstones.', scores)
+        self.assertIn('原文 (Gallbladder_Cholecystolithiasis)', ref['absent'])
+        self.assertNotIn('原文 (Bladder_Stone)', ref['present'] + ref['absent'])
+
+    def test_extract_reference_maps_common_report_synonyms(self):
+        scores = {'原文 (Liver_Hypoattenuating lesion)': 0.8, '原文 (Spleen_Splenomegaly)': 0.6,
+                  '原文 (Large bowel_Colon cancer)': 0.7, '原文 (Kidney_Hypoattenuating lesion)': 0.5}
+        text = ('Liver: Multiple hypodense lesions are seen diffusely involving both hepatic lobes. '
+                'Spleen: Enlarged in size, measuring 122 x 66 x 132 mm. '
+                'Colon: mural thickening of the splenic flexure, suspicious for a colonic neoplastic lesion.')
+        ref = review.extract_reference(text, scores)
+        self.assertIn('原文 (Liver_Hypoattenuating lesion)', ref['present'])
+        self.assertIn('原文 (Spleen_Splenomegaly)', ref['present'])
+        self.assertIn('原文 (Large bowel_Colon cancer)', ref['present'])
+        self.assertNotIn('原文 (Kidney_Hypoattenuating lesion)', ref['present'])
+
+    def test_extract_reference_ignores_differential_and_recommendation_clauses(self):
+        scores = {'原文 (Liver_Abscess)': 0.5, '原文 (Liver_Hypoattenuating lesion)': 0.8}
+        text = ('Liver: multiple hypodense lesions are seen diffusely involving both hepatic lobes. '
+                'Differential: infective microabscesses; multifocal hepatic infarcts. '
+                'Recommendation: correlation with MRI liver.')
+        ref = review.extract_reference(text, scores)
+        self.assertIn('原文 (Liver_Hypoattenuating lesion)', ref['present'])
+        self.assertNotIn('原文 (Liver_Abscess)', ref['present'] + ref['absent'])
+
 if __name__ == '__main__':
     unittest.main()

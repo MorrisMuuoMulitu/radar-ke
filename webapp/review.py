@@ -2,8 +2,10 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 from collections import Counter
+from functools import lru_cache
 from datetime import datetime, timezone
 from pathlib import Path
 import numpy as np
@@ -366,59 +368,179 @@ _ORGAN_ALIASES = {
 }
 
 _FINDING_ALIASES = {
-    'cyst': {'cyst', 'cysts'},
+    'cyst': {'cyst', 'cysts', 'cystic lesion', 'cystic lesions'},
     'stone': {'stone', 'stones', 'calculus', 'calculi'},
-    'cholecystolithiasis': {'gallstone', 'gallstones', 'cholecystolithiasis'},
-    'steatotic liver disease': {'steatosis', 'fatty liver', 'steatotic'},
-    'hydronephrosis': {'hydronephrosis', 'hydro'},
-    'splenomegaly': {'splenomegaly', 'enlarged spleen'},
-    'aortic dissection': {'dissection'},
-    'aneurysm': {'aneurysm', 'aneurysms'},
-    'fracture': {'fracture', 'fractures'},
-    'diverticulum': {'diverticulosis', 'diverticulum', 'diverticula'},
-    'obstruction': {'obstruction', 'obstructing'},
-    'metastasis': {'metastasis', 'metastases'},
-    'lymphoma': {'lymphoma'},
-    'pericardial effusion': {'pericardial effusion'},
-    'pleural effusion': {'pleural effusion'},
-    'pneumothorax': {'pneumothorax'},
+    'cholecystolithiasis': {'cholecystolithiasis', 'gallstone', 'gallstones', 'cholelithiasis'},
+    'nephrolithiasis': {'nephrolithiasis', 'renal calculus', 'renal calculi', 'renal stone',
+                        'renal stones', 'kidney stone', 'kidney stones',
+                        'calculus', 'calculi', 'stone', 'stones'},
+    'hepatolithiasis': {'hepatolithiasis', 'intrahepatic stones'},
+    'steatotic liver disease': {'steatosis', 'fatty liver', 'hepatic steatosis', 'steatotic'},
+    'hydronephrosis': {'hydronephrosis', 'hydroureteronephrosis', 'hydroureter'},
+    'splenomegaly': {'splenomegaly', 'enlarged spleen', 'spleen enlarged', 'splenic enlargement',
+                     'enlarged', 'enlargement'},
+    'hepatomegaly': {'hepatomegaly', 'enlarged liver', 'liver enlarged', 'enlarged', 'enlargement'},
+    'cardiomegaly': {'cardiomegaly', 'enlarged heart', 'cardiac enlargement', 'enlarged', 'enlargement'},
+    'aortic dissection': {'dissection', 'dissecting'},
+    'aneurysm': {'aneurysm', 'aneurysms', 'aneurysmal'},
+    'atherosclerosis': {'atherosclerosis', 'atherosclerotic', 'calcified plaque'},
+    'thrombosis': {'thrombosis', 'thrombus', 'thrombosed'},
+    'fracture': {'fracture', 'fractures', 'fractured'},
+    'diverticulum': {'diverticulum', 'diverticula', 'diverticulosis', 'diverticular'},
+    'obstruction': {'obstruction', 'obstructing', 'obstructed', 'obstructive'},
+    'dilatation': {'dilatation', 'dilation', 'dilated'},
+    'wall thickening': {'wall thickening', 'mural thickening', 'bowel wall thickening', 'thickening'},
+    'hypoattenuating lesion': {'hypoattenuating lesion', 'hypoattenuating', 'hypodense lesion',
+                               'hypodense lesions', 'hypodense', 'low attenuation lesion',
+                               'low density lesion', 'low-density lesion', 'hepatic lesion',
+                               'focal hepatic lesion', 'liver lesion', 'focal liver lesion'},
+    'hyperattenuating lesion': {'hyperattenuating lesion', 'hyperdense lesion', 'hyperdense'},
+    'metastasis': {'metastasis', 'metastases', 'metastatic', 'peritoneal deposits', 'deposits'},
+    'lymphoma': {'lymphoma', 'lymphoproliferative', 'lymphomatous'},
+    'hepatocellular carcinoma': {'hepatocellular carcinoma', 'hcc', 'hepatic mass', 'liver mass'},
+    'colon cancer': {'colon cancer', 'colonic neoplasm', 'colonic neoplastic lesion',
+                     'neoplastic lesion', 'neoplasm', 'carcinoma', 'malignancy', 'tumour', 'tumor'},
+    'rectal cancer': {'rectal cancer', 'rectal neoplasm', 'rectal carcinoma',
+                      'rectal tumour', 'rectal tumor'},
+    'gastric cancer': {'gastric cancer', 'gastric neoplasm', 'gastric carcinoma',
+                       'gastric tumour', 'gastric tumor'},
+    'pancreatic cancer': {'pancreatic cancer', 'pancreatic neoplasm', 'pancreatic carcinoma',
+                          'pancreatic mass', 'pancreatic tumour', 'pancreatic tumor'},
+    'gallbladder cancer': {'gallbladder cancer', 'gallbladder carcinoma', 'gallbladder neoplasm'},
+    'renal cell carcinoma': {'renal cell carcinoma', 'renal mass', 'renal neoplasm',
+                             'renal tumour', 'renal tumor', 'kidney mass'},
+    'abscess': {'abscess', 'abscesses', 'microabscess', 'microabscesses'},
+    'hemangioma': {'hemangioma', 'haemangioma'},
+    'cirrhosis': {'cirrhosis', 'cirrhotic'},
+    'cholecystitis': {'cholecystitis'},
+    'pancreatitis': {'pancreatitis'},
     'appendicitis': {'appendicitis'},
-    'cirrhosis': {'cirrhosis'},
-    'ulcer': {'ulcer', 'ulcers'},
+    'ulcer': {'ulcer', 'ulcers', 'ulceration'},
+    'pericardial effusion': {'pericardial effusion'},
+    'pleural effusion': {'pleural effusion', 'pleural effusions'},
+    'pneumothorax': {'pneumothorax'},
+    'atelectasis': {'atelectasis', 'pulmonary collapse', 'collapse'},
+    'nodule': {'nodule', 'nodules'},
+    'mass': {'mass', 'masses'},
 }
 
+# Cues that a finding is being *denied* ("no hydronephrosis", "without ascites").
+# Only text in the same sentence before the term counts, so "No ascites. Small
+# bowel obstruction." is not read as a negated obstruction.
+_NEGATION_PATTERN = re.compile(
+    r'\b(no|not|nil|without|absent|negative for|free of|denies|denied|'
+    r'no evidence of|no significant|no definite|no gross|no focal|no obvious)\b'
+)
 
-def match_findings_to_report(text, scores):
-    """Suggest finding keys mentioned in a radiologist report text.
 
-    A finding matches when its finding term (or an alias) appears in the
-    text. Ambiguous terms (e.g. "cyst" matches several organs) require the
-    organ to also be mentioned; unique terms (e.g. "gallstones") match on
-    their own. Results are candidates, not decisions.
+def _normalize(text):
+    """Lowercase, treat hyphens as spaces, and collapse whitespace."""
+    return re.sub(r'\s+', ' ', (text or '').lower().replace('-', ' ')).strip()
+
+
+@lru_cache(maxsize=4096)
+def _term_pattern(term):
+    """Word-boundary matcher so 'bladder' does not match 'gallbladder'."""
+    return re.compile(r'(?<![a-z0-9])' + re.escape(term) + r'(?![a-z0-9])')
+
+
+def _contains(hay, terms):
+    return any(_term_pattern(term).search(hay) for term in terms)
+
+
+def _negated(hay, term):
+    """True when every occurrence of `term` sits behind a negation cue."""
+    occurrences = list(_term_pattern(term).finditer(hay))
+    if not occurrences:
+        return False
+    for match in occurrences:
+        segment = hay[max(0, match.start() - 90):match.start()]
+        segment = re.split(r'[.;\n]', segment)[-1]          # same sentence only
+        if not _NEGATION_PATTERN.search(segment):
+            return False                                      # a positive mention exists
+    return True
+
+
+# Differential-diagnosis and recommendation clauses list possibilities rather
+# than observations, so they must not become reference findings.
+_NON_FINDING_PATTERN = re.compile(r'\b(differential|ddx|differentials|recommend|recommendation|'
+                                  r'recommended|advise|advised|suggest(?:s|ed)? (?:MRI|CT|US|ultrasound|colonoscopy))\b')
+
+
+def _clause_spans(hay):
+    """Character spans of report clauses (split on sentence end and newlines).
+
+    Colons are deliberately *not* boundaries: radiology reports use "Organ:"
+    headers whose content belongs to the same statement.
     """
-    hay = (text or '').lower()
+    spans, start = [], 0
+    for match in re.finditer(r'[.;\n]', hay):
+        spans.append((start, match.start()))
+        start = match.end()
+    spans.append((start, len(hay)))
+    return spans
+
+
+def extract_reference(text, scores):
+    """Suggest the radiologist reference from a report: present vs absent findings.
+
+    A finding is attributed to an organ only when both appear in the same
+    clause, so "No focal large-bowel obstruction. Small-bowel obstruction."
+    yields one absent and one present finding rather than two of either.
+    Negation cues inside that clause mark the finding absent. Candidates, not
+    decisions.
+    """
+    hay = _normalize(text)
+    empty = {'present': [], 'absent': []}
+    if not hay:
+        return empty
     labels = _finding_labels(scores)
     key_info = []
     for key, label in labels.items():
         organ = label.split('/', 1)[0].strip()
         finding = label.split('/', 1)[1].strip()
-        organ_terms = {organ.lower()} | _ORGAN_ALIASES.get(organ.lower(), set())
-        finding_terms = {finding.lower()} | _FINDING_ALIASES.get(finding.lower(), set())
-        key_info.append((key, organ, organ_terms, finding_terms))
+        organ_terms = {_normalize(organ)} | {_normalize(t) for t in _ORGAN_ALIASES.get(organ.lower(), set())}
+        finding_terms = {_normalize(finding)} | {_normalize(t) for t in _FINDING_ALIASES.get(finding.lower(), set())}
+        key_info.append((key, organ_terms, finding_terms))
     term_counts = Counter()
-    for _, _, _, finding_terms in key_info:
+    for _, _, finding_terms in key_info:
         for term in finding_terms:
             term_counts[term] += 1
-    matched = []
-    for key, organ, organ_terms, finding_terms in key_info:
-        hit_terms = [term for term in finding_terms if term in hay]
+    clauses = _clause_spans(hay)
+    # Findings are only observed in reporting clauses: differential lists and
+    # recommendation clauses describe possibilities, not observations.
+    observed = ' . '.join(hay[start:end] for start, end in clauses
+                          if not _NON_FINDING_PATTERN.search(hay[start:end]))
+    present, absent = [], []
+    for key, organ_terms, finding_terms in key_info:
+        hit_terms = [term for term in finding_terms if _contains(observed, {term})]
         if not hit_terms:
             continue
-        organ_hit = any(term in hay for term in organ_terms)
-        ambiguous = any(term_counts[term] > 1 for term in hit_terms)
-        if organ_hit or not ambiguous:
-            matched.append(key)
-    return matched
+        states = []
+        for clause_start, clause_end in clauses:
+            clause = hay[clause_start:clause_end]
+            if not _contains(clause, finding_terms):
+                continue
+            if not _contains(clause, organ_terms):
+                continue
+            if _NON_FINDING_PATTERN.search(clause):
+                continue                                       # differential/recommendation
+            states.append('absent' if _NEGATION_PATTERN.search(clause) else 'present')
+        if not states:
+            # Organ never named alongside the finding: keep unambiguous terms only.
+            if any(term_counts[term] > 1 for term in hit_terms):
+                continue
+            states = ['absent' if _negated(observed, term) else 'present' for term in hit_terms]
+        if 'present' in states:
+            present.append(key)
+        elif 'absent' in states:
+            absent.append(key)
+    return {'present': present, 'absent': absent}
+
+
+def match_findings_to_report(text, scores):
+    """Present-finding candidates mentioned in a report (negations excluded)."""
+    return extract_reference(text, scores)['present']
 
 
 def validation_table(record, threshold=REPORT_SCORE_THRESHOLD):

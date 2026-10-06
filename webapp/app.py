@@ -26,6 +26,7 @@ from review import (
     build_case_record,
     clear_case,
     delete_case_record,
+    extract_reference,
     filter_worklist,
     FINDING_STATES,
     filter_findings,
@@ -568,12 +569,17 @@ else:
         st.caption('Mark which findings the radiologist report confirms as present or absent. Agreement with model scores is computed per case and saved with the review.')
         extracted = st.session_state.pop('_extract_keys', None)
         if extracted is not None:
-            st.session_state.validation_present = list(extracted)
+            # Accept either the legacy present-only list or the present/absent dict.
+            if isinstance(extracted, dict):
+                st.session_state.validation_present = list(extracted.get('present', []))
+                st.session_state.validation_absent = list(extracted.get('absent', []))
+            else:
+                st.session_state.validation_present = list(extracted)
         a, b = st.columns([1.4, 1])
         report_text = a.text_area('Paste radiologist report', height=120, key='validation_report_text',
-                                  placeholder='Paste the report text; suggested findings fill the present list for confirmation.')
+                                  placeholder='Paste the report text; confirmed findings fill both lists for review.')
         if b.button('Extract findings', width='stretch', disabled=not report_text.strip()):
-            st.session_state['_extract_keys'] = match_findings_to_report(report_text, result['scores'])
+            st.session_state['_extract_keys'] = extract_reference(report_text, result['scores'])
             st.rerun()
         finding_options = rows.key.tolist()
         validation_labels = dict(zip(rows.key, rows.organ + ' / ' + rows.finding))
