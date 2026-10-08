@@ -82,6 +82,7 @@ The worklist (`Case worklist` view) turns the single-case tool into a review pip
 - Each row shows filename, saved date, case ID, status, shortlist count, and **likely-present findings** (count + names).
 - Per-row actions: **Open case** (loads the full saved review), **Report TXT** (download the structured report without opening), **Delete**.
 - **Download worklist CSV** of the filtered list.
+- **Cohort validation** (below the list): per-finding **sensitivity / specificity / precision** rolled up across every saved, adjudicated case, with micro-averaged metrics and CSV/TXT downloads. Empty until cases have reference findings from the Validation tab.
 
 ### 6. Validation
 
@@ -164,6 +165,34 @@ Matching organ masks (6 structures: liver, bladder, lungs, kidneys, bone, brain)
 
 ### In-domain external test set (MERLIN)
 The official external test set RADAR was evaluated on (AvgAUC 0.8835) is the **MERLIN** dataset from the [Stanford AIMI Shared Datasets portal](https://stanfordaimi.azurewebsites.net/datasets/60b9c7ff-877b-48ce-96c3-0194c8205c40) (registration required). It ships radiologist reports and disease/finding labels; the repo includes RADAR's published results in `results/RADAR_infer_results_MerlinTestset.csv` and the reprocessing scripts under `ckpt/` (`transform_report_to_json.py`, `transform_label_to_json.py`). See `docs/INFERENCE.md` for the full external-evaluation workflow.
+
+### MERLIN subset evaluation (`RADAR_inference/merlin_subset_eval.py`)
+Reproduce the published AUCs on a sample of the MERLIN test split — no local DICOM export needed, and disk stays bounded:
+
+```bash
+# 0) one-time: from the portal files, generate the two JSON inputs
+python ckpt/transform_report_to_json.py     # -> ckpt/merlin_report.json   (test split)
+python ckpt/transform_label_to_json.py      # -> ckpt/merlin_labels.json   (ground truth)
+
+# 1) plan (no GPU): pick a deterministic sample, see size/time
+python RADAR_inference/merlin_subset_eval.py --data-dir /data/merlin_test \
+    --n 200 --seed 0 --out results/merlin_subset --dry-run
+
+# 2) score (GPU). On <=10 GB GPUs add ROI_SIZE=64,192,288
+MODEL_ROOT=$PWD/ckpt CONFIGS_ROOT=$PWD/ckpt ROI_SIZE=64,192,288 \
+python RADAR_inference/merlin_subset_eval.py --data-dir /data/merlin_test \
+    --n 200 --seed 0 --out results/merlin_subset \
+    --labels ckpt/merlin_labels.json --results results/merlin_subset/results.csv
+
+# 3) metrics only (no GPU), e.g. after re-downloading labels
+python RADAR_inference/merlin_subset_eval.py --metrics-only results/merlin_subset/results.csv \
+    --labels ckpt/merlin_labels.json --out results/merlin_subset
+```
+
+- Uses the **MERLIN 21-item** pipeline (`inference_merlin_testset.py`, `infer_text_embedding_merlin.pt`) so results are comparable with `docs/INFERENCE.md` — this is a different item set from the app's 146 findings.
+- Outputs: `selection.txt` (provenance), `results.csv` (resumable master), `merlin_comparison.md` / `.json` (computed vs published AUC per finding, plus Average AUC).
+- **Disk/time guide:** ≈200 MB per study, ≈8–26 s per study on an 8 GB GPU → n=200 ≈ 40 GB / ≈1.5 h; the full 5,125-study split (≈1 TB) needs chunking (`--delete-source` frees each study after scoring, keep appending to `--results`) or a cloud VM.
+- Re-runs are resumable: studies already in `--results` are skipped.
 
 ---
 
@@ -260,7 +289,7 @@ rework.
 python -m unittest discover -s webapp/tests -v
 ```
 
-Coverage includes: findings filtering/export, review-state workflow (AppTest), window-preset math, case-history save/open (AppTest), worklist rows/filter/delete, worklist UI open-flow (AppTest), report template sections/content, and the validation harness (report-text extraction, confusion matrix, metrics, persistence).
+Coverage includes: findings filtering/export, review-state workflow (AppTest), window-preset math, case-history save/open (AppTest), worklist rows/filter/delete, worklist UI open-flow (AppTest), report template sections/content, cine clip rendering/encoding (GIF always, MP4 when ffmpeg is present) plus a clip-generation AppTest, the validation harness (report-text extraction with negation/clause handling, confusion matrix, metrics, persistence), cohort roll-up across cases, and the MERLIN metric logic (tie-aware AUC, subset sampling, label mapping, computed-vs-published comparison).
 
 `git diff --check` before committing to catch whitespace errors.
 
@@ -273,6 +302,9 @@ Coverage includes: findings filtering/export, review-state workflow (AppTest), w
 | `webapp/style.css` | Styling for the workspace shell. |
 | `webapp/.streamlit/config.toml` | Server settings (headless, upload cap). |
 | `RADAR_inference/inference_service.py` | **Original.** Device-agnostic inference (`_infer_device()`): NIfTI load → resample 1×1×5 mm → sliding-window segmentation → per-organ finding scoring → `.npz` (image/HU/mask/scores) + CSV. Not part of upstream. |
+| `RADAR_inference/merlin_eval.py` | **Original.** Pure (no torch) MERLIN metric logic: tie-aware AUC, deterministic subset sampling, label↔finding mapping, computed-vs-published comparison, report formatting. Unit-tested. |
+| `RADAR_inference/merlin_subset_eval.py` | **Original.** CLI for the MERLIN subset evaluation: plan/resume/chunk, inference via the MERLIN 21-item pipeline, master results CSV, comparison report. |
+| `RADAR_inference/inference_merlin_testset.py` | Upstream MERLIN evaluation script, **hardened here**: device-agnostic, `RADAR_NUM_WORKERS`, `ROI_SIZE`, CPU accumulation buffers (8 GB GPUs), configurable report path, subset-friendly case filtering. |
 | `deploy/` | **Original.** Docker Compose stack: GPU webapp + Caddy reverse proxy (basic auth, internal TLS), persistent case volume, tester onboarding pack, password-hash helper. |
 | `docs/DEPLOYMENT_CLOUD.md`, `docs/deployment-agent-prompt.md` | **Original.** GPU cloud deployment path, and the self-contained deployment agent brief. |
 | `DEPLOYMENT_REPORT.md` | **Original.** Pilot deployment record: hardening steps, verification results, issues found and their fixes. |

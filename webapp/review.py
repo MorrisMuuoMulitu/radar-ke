@@ -644,3 +644,109 @@ def validation_report(record, threshold=REPORT_SCORE_THRESHOLD, total_findings=1
             lines.append(f'  {row["finding"]}: score {score_text}, '
                          f'reference {row["reference"]}, predicted {row["predicted"]} \u2014 {row["agreement"]}')
     return '\n'.join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Cohort validation: roll per-case adjudications up across the whole store.
+# ---------------------------------------------------------------------------
+
+COHORT_COLUMNS = ['key', 'finding', 'cases', 'tp', 'fp', 'tn', 'fn',
+                  'sensitivity', 'specificity', 'precision']
+
+
+def cohort_validation_rows(store_dir=None):
+    """Per-finding agreement aggregated over every saved, adjudicated case."""
+    store = Path(store_dir) if store_dir is not None else history_dir()
+    if not store.exists():
+        return pd.DataFrame(columns=COHORT_COLUMNS)
+    tally = {}
+    for path in sorted(store.glob('*.json')):
+        try:
+            record = json.loads(path.read_text(encoding='utf-8'))
+        except (json.JSONDecodeError, OSError):
+            continue
+        threshold = float((record.get('validation') or {}).get('threshold', REPORT_SCORE_THRESHOLD))
+        table = validation_table(record, threshold=threshold)
+        if table.empty:
+            continue
+        labels = _finding_labels(record.get('scores', {}))
+        for _, row in table.iterrows():
+            entry = tally.setdefault(row['key'], {
+                'finding': labels.get(row['key'], row['key']),
+                'cases': 0, 'tp': 0, 'fp': 0, 'tn': 0, 'fn': 0,
+            })
+            entry['cases'] += 1
+            entry[row['agreement'].lower()] += 1
+    rows = []
+    for key, entry in tally.items():
+        tp, fp, tn, fn = entry['tp'], entry['fp'], entry['tn'], entry['fn']
+
+        def ratio(numerator, denominator):
+            return numerator / denominator if denominator else None
+
+        rows.append({
+            'key': key,
+            'finding': entry['finding'],
+            'cases': entry['cases'],
+            'tp': tp, 'fp': fp, 'tn': tn, 'fn': fn,
+            'sensitivity': ratio(tp, tp + fn),
+            'specificity': ratio(tn, tn + fp),
+            'precision': ratio(tp, tp + fp),
+        })
+    frame = pd.DataFrame(rows, columns=COHORT_COLUMNS)
+    if not frame.empty:
+        frame = frame.sort_values(['sensitivity', 'finding'], ascending=[False, True],
+                                  na_position='last').reset_index(drop=True)
+    return frame
+
+
+def cohort_validation_summary(rows):
+    """Micro-averaged metrics across all adjudicated findings in the cohort."""
+    if rows is None or rows.empty:
+        return {'findings': 0, 'tp': 0, 'fp': 0, 'tn': 0, 'fn': 0, 'sensitivity': None,
+                'specificity': None, 'precision': None, 'accuracy': None}
+    tp = int(rows['tp'].sum())
+    fp = int(rows['fp'].sum())
+    tn = int(rows['tn'].sum())
+    fn = int(rows['fn'].sum())
+
+    def ratio(numerator, denominator):
+        return numerator / denominator if denominator else None
+
+    return {
+        'findings': int(len(rows)),
+        'tp': tp, 'fp': fp, 'tn': tn, 'fn': fn,
+        'sensitivity': ratio(tp, tp + fn),
+        'specificity': ratio(tn, tn + fp),
+        'precision': ratio(tp, tp + fp),
+        'accuracy': ratio(tp + tn, tp + fp + tn + fn),
+    }
+
+
+def cohort_validation_report(rows, summary=None):
+    """Text summary of cohort agreement, suitable for sharing."""
+    summary = summary or cohort_validation_summary(rows)
+    def fmt(value):
+        return f'{value:.3f}' if value is not None else 'n/a'
+    lines = [
+        'COHORT VALIDATION SUMMARY',
+        '-------------------------',
+        f'Findings adjudicated: {summary["findings"]}',
+        f'Agreement: TP {summary["tp"]} \u2022 FP {summary["fp"]} \u2022 '
+        f'TN {summary["tn"]} \u2022 FN {summary["fn"]}',
+        f'Sensitivity: {fmt(summary["sensitivity"])}',
+        f'Specificity: {fmt(summary["specificity"])}',
+        f'Precision: {fmt(summary["precision"])}',
+        f'Accuracy: {fmt(summary["accuracy"])}',
+        '',
+        'Per finding:',
+    ]
+    if rows is None or rows.empty:
+        lines.append('  No cases with adjudicated findings yet.')
+    else:
+        for _, row in rows.iterrows():
+            lines.append(f'  {row["finding"]}: cases {row["cases"]}, '
+                         f'sens {fmt(row["sensitivity"])}, spec {fmt(row["specificity"])}, '
+                         f'prec {fmt(row["precision"])} (TP {row["tp"]}/FP {row["fp"]}/'
+                         f'TN {row["tn"]}/FN {row["fn"]})')
+    return '\n'.join(lines)

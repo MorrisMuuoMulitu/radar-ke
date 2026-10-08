@@ -26,6 +26,11 @@ from transformers import BertTokenizer
 model_root = os.environ.get("MODEL_ROOT", "../ckpt")
 configs_root = os.environ.get("CONFIGS_ROOT", "../ckpt")
 
+
+def _infer_device():
+    """cuda when available, otherwise cpu (CPU fallback / smoke tests)."""
+    return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 def masks_to_boxes_3d(masks):
     """Compute the bounding boxes around the provided 3D masks
 
@@ -129,16 +134,28 @@ class DataFolder(Dataset):
             print('Please modify the --img_dir to your own path.')
             assert False
         
-        merlin_info = json.load(open('../ckpt/merlin_report.json'))
+        merlin_report_path = os.path.join(configs_root, 'merlin_report.json')
+        if not os.path.exists(merlin_report_path):
+            raise FileNotFoundError(
+                f'MERLIN report file not found: {merlin_report_path}. Generate it from the portal '
+                'reports_final.xlsx with ckpt/transform_report_to_json.py (see docs/INFERENCE.md).')
+        with open(merlin_report_path, encoding='utf-8') as handle:
+            merlin_info = json.load(handle)
         patient_list = []
-        for id,minfo in merlin_info.items():
+        for id, minfo in merlin_info.items():
             if minfo['split'] == 'test':
                 patient_list.append(id+'.nii.gz')
 
+        # Keep only volumes that are actually present, so a subset can be staged
+        # instead of requiring the full test split on disk.
         self.img_paths = [
             os.path.join(img_dir, p)
             for p in patient_list
+            if os.path.exists(os.path.join(img_dir, p))
         ]
+        if not self.img_paths:
+            raise FileNotFoundError(
+                f'No MERLIN test volumes from {merlin_report_path} were found in {img_dir}.')
         
         self.pad_func = transforms.SpatialPadd(
             keys=["image"], 
@@ -390,7 +407,7 @@ class RADAR(nn.Module):
                     if item_organ_name != organ_name:
                         continue
 
-                    text_feat = text_feat_dict[item]
+                    text_feat = text_feat_dict[item].to(images.device)
 
                     logits = image_feat @ text_feat.t() / self.temp
                     probs = logits.softmax(-1)
@@ -402,25 +419,31 @@ class RADAR(nn.Module):
 def evaluate(pad_func, model, img_dir, save_dir, save_tag):
 
     datafolder = DataFolder(img_dir)
+    # Whole CT volumes travel between worker processes via /dev/shm; keep the
+    # count low (override with RADAR_NUM_WORKERS). 12 exhausted memory/swap.
+    num_workers = max(0, int(os.environ.get('RADAR_NUM_WORKERS', '2')))
     dataloader = DataLoader(
         datafolder,
         batch_size=1,
         shuffle=False,
-        num_workers=12,
+        num_workers=num_workers,
         drop_last=False,
         collate_fn=collate_fn
     )
 
     sw_batch_size = 1
     overlap = 0.25
-    roi_size = (96, 256, 384)
+    # Allow smaller windows on limited-VRAM GPUs, e.g. ROI_SIZE=64,192,288.
+    # Default (96, 256, 384) matches the paper setup.
+    roi_size = tuple(int(x) for x in os.environ.get('ROI_SIZE', '96,256,384').split(','))
 
     miss_num = 0
     results = []
     organ_status = {}
 
-    # load pos/neg ensembled prompt embeddings
-    text_feat_dict = torch.load('../ckpt/infer_text_embedding_merlin.pt')
+    # load pos/neg ensembled prompt embeddings (CPU tensors; moved per-device later)
+    text_feat_dict = torch.load(os.path.join(model_root, 'infer_text_embedding_merlin.pt'),
+                                map_location='cpu')
     organ_feat_dict = {}
     save_path = os.path.join(save_dir, f'RADAR_infer_results_{save_tag}.csv')
     os.makedirs(save_dir, exist_ok=True)
@@ -438,7 +461,7 @@ def evaluate(pad_func, model, img_dir, save_dir, save_tag):
         fid = meta_info['file_name']
         organ_feat_dict[fid] = {}
 
-        image = image[None].cuda()
+        image = image[None].to(_infer_device())
 
         test_organs = meta_info['test_organ_names']
 
@@ -454,8 +477,10 @@ def evaluate(pad_func, model, img_dir, save_dir, save_tag):
         organ_logits.pop('胆囊_术后胆囊缺失')  # surgically_absent_gallbladder
 
         # get full mask
-        full_mask = torch.zeros((1, 37) + tuple(image_size)).cuda()
-        count_map = torch.zeros_like(full_mask).cuda()
+        # NOTE: the 37-channel full-volume buffers stay on CPU so 8 GB GPUs fit;
+        # only the single-channel argmax result moves back to the device.
+        full_mask = torch.zeros((1, 37) + tuple(image_size))
+        count_map = torch.zeros_like(full_mask)
 
         for slice_g in range(0, num_win, sw_batch_size):
             slice_range = range(slice_g, min(slice_g + sw_batch_size, num_win))
@@ -464,7 +489,7 @@ def evaluate(pad_func, model, img_dir, save_dir, save_tag):
                 for idx in slice_range
             ]
             
-            window_patches = torch.cat([image[win_slice] for win_slice in unravel_slice]).cuda()
+            window_patches = torch.cat([image[tuple(win_slice)] for win_slice in unravel_slice]).to(_infer_device())
 
             organ_logits, pred_window_seg_prob = model.forward_test_win(
                 window_patches, 
@@ -476,18 +501,19 @@ def evaluate(pad_func, model, img_dir, save_dir, save_tag):
                 None
             )
 
-            # interpolate
-            interpolated_seg_prob = F.interpolate(pred_window_seg_prob, size=window_patches.shape[2:], mode='trilinear')
+            # interpolate (to CPU: the accumulation buffers live there)
+            interpolated_seg_prob = F.interpolate(
+                pred_window_seg_prob, size=window_patches.shape[2:], mode='trilinear').cpu()
             
             for ii, slice_idx in enumerate(slice_range):
                 full_slice = unravel_slice[ii]
-                full_mask[full_slice] += interpolated_seg_prob[ii]
-                count_map[full_slice] += 1
+                full_mask[tuple(full_slice)] += interpolated_seg_prob[ii]
+                count_map[tuple(full_slice)] += 1
         
         # Avoid division by zero by ensuring count_map is at least 1 everywhere
         count_map = torch.clamp(count_map, min=1)
         stitched_mask = full_mask / count_map  # argmax
-        stitched_mask = stitched_mask.argmax(1).unsqueeze(0)
+        stitched_mask = stitched_mask.argmax(1).unsqueeze(0).to(_infer_device())
     
         margin = 2
         boundaries = []
@@ -598,9 +624,9 @@ def initialize():
     msg = model.load_state_dict(ckpt['model'], strict=False)
 
     model.eval()
-    model.cuda()
+    model.to(_infer_device())
 
-    print('\n--> Initialize done')
+    print(f'\n--> Initialize done (device: {_infer_device()})')
 
     return pad_func, model
 

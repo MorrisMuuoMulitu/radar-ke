@@ -25,6 +25,9 @@ from review import (
     apply_window,
     build_case_record,
     clear_case,
+    cohort_validation_report,
+    cohort_validation_rows,
+    cohort_validation_summary,
     delete_case_record,
     extract_reference,
     filter_worklist,
@@ -384,6 +387,41 @@ def show_worklist():
     st.download_button('Download worklist CSV',
                        filtered.drop(columns='case_id').to_csv(index=False).encode('utf-8-sig'),
                        'radar_worklist.csv', 'text/csv')
+    show_cohort_validation()
+
+
+def show_cohort_validation():
+    """Per-finding agreement rolled up across all adjudicated saved cases."""
+    st.divider()
+    st.subheader('Cohort validation')
+    st.caption('Agreement between model scores and the adjudicated reference standards, across every saved case. '
+               'Only findings adjudicated in the Validation tab are counted.')
+    cohort = cohort_validation_rows()
+    if cohort.empty:
+        st.caption('No adjudicated findings yet — open a case, use the Validation tab, and save it.')
+        return
+    summary = cohort_validation_summary(cohort)
+    a, b, c, d, e = st.columns(5)
+    a.metric('Findings adjudicated', summary['findings'])
+    b.metric('Sensitivity', f"{summary['sensitivity']:.3f}" if summary['sensitivity'] is not None else '—')
+    c.metric('Specificity', f"{summary['specificity']:.3f}" if summary['specificity'] is not None else '—')
+    d.metric('Precision', f"{summary['precision']:.3f}" if summary['precision'] is not None else '—')
+    e.metric('Accuracy', f"{summary['accuracy']:.3f}" if summary['accuracy'] is not None else '—')
+    st.caption(f"TP {summary['tp']} \u2022 FP {summary['fp']} \u2022 TN {summary['tn']} \u2022 FN {summary['fn']} "
+               '\u2014 micro-averaged over adjudicated findings')
+    st.dataframe(cohort[['finding', 'cases', 'tp', 'fp', 'tn', 'fn',
+                         'sensitivity', 'specificity', 'precision']],
+                 hide_index=True, width='stretch', height=280,
+                 column_config={'finding': 'Finding', 'cases': 'Cases',
+                                'sensitivity': st.column_config.NumberColumn('Sensitivity', format='%.3f'),
+                                'specificity': st.column_config.NumberColumn('Specificity', format='%.3f'),
+                                'precision': st.column_config.NumberColumn('Precision', format='%.3f')})
+    a, b = st.columns(2)
+    a.download_button('Download cohort CSV',
+                      cohort.drop(columns='key').to_csv(index=False).encode('utf-8-sig'),
+                      'radar_cohort_validation.csv', 'text/csv', width='stretch')
+    b.download_button('Download cohort summary TXT', cohort_validation_report(cohort, summary),
+                      'radar_cohort_summary.txt', 'text/plain', width='stretch')
 
 
 # Consume view-switch intents BEFORE the View radio widget is instantiated

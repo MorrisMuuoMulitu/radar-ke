@@ -290,5 +290,39 @@ class ReviewTests(unittest.TestCase):
         self.assertIn('原文 (Liver_Hypoattenuating lesion)', ref['present'])
         self.assertNotIn('原文 (Liver_Abscess)', ref['present'] + ref['absent'])
 
+    def test_cohort_validation_rolls_up_across_cases(self):
+        with tempfile.TemporaryDirectory() as folder:
+            # case A: Liver_Cyst present+predicted positive (TP); Kidney_Cyst absent but predicted (FP)
+            review.save_case_record(review.build_case_record(
+                {'file_name': 'a.nii.gz', 'scores': {'原文 (Liver_Cyst)': 0.8, '原文 (Kidney_Cyst)': 0.7}},
+                'Reviewed', [], '', validation={'present': ['原文 (Liver_Cyst)'],
+                                                'absent': ['原文 (Kidney_Cyst)'], 'threshold': 0.5}), Path(folder))
+            # case B: Liver_Cyst present but scored low (FN); Kidney_Cyst absent, scored low (TN)
+            review.save_case_record(review.build_case_record(
+                {'file_name': 'b.nii.gz', 'scores': {'原文 (Liver_Cyst)': 0.2, '原文 (Kidney_Cyst)': 0.1}},
+                'Reviewed', [], '', validation={'present': ['原文 (Liver_Cyst)'],
+                                                'absent': ['原文 (Kidney_Cyst)'], 'threshold': 0.5}), Path(folder))
+            rows = review.cohort_validation_rows(Path(folder))
+            by_key = {row['key']: row for row in rows.to_dict('records')}
+            liver = by_key['原文 (Liver_Cyst)']
+            kidney = by_key['原文 (Kidney_Cyst)']
+            self.assertEqual((liver['cases'], liver['tp'], liver['fn']), (2, 1, 1))
+            self.assertAlmostEqual(liver['sensitivity'], 0.5)
+            self.assertEqual((kidney['cases'], kidney['fp'], kidney['tn']), (2, 1, 1))
+            self.assertAlmostEqual(kidney['specificity'], 0.5)
+            summary = review.cohort_validation_summary(rows)
+            self.assertEqual((summary['tp'], summary['fp'], summary['tn'], summary['fn']), (1, 1, 1, 1))
+            self.assertAlmostEqual(summary['accuracy'], 0.5)
+            self.assertIn('COHORT VALIDATION SUMMARY', review.cohort_validation_report(rows))
+
+    def test_cohort_validation_empty_store(self):
+        with tempfile.TemporaryDirectory() as folder:
+            rows = review.cohort_validation_rows(Path(folder))
+            self.assertTrue(rows.empty)
+            summary = review.cohort_validation_summary(rows)
+            self.assertEqual(summary['findings'], 0)
+            self.assertIsNone(summary['sensitivity'])
+            self.assertIn('No cases with adjudicated findings', review.cohort_validation_report(rows))
+
 if __name__ == '__main__':
     unittest.main()
