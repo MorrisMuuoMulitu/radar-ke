@@ -166,8 +166,23 @@ Matching organ masks (6 structures: liver, bladder, lungs, kidneys, bone, brain)
 ### In-domain external test set (MERLIN)
 The official external test set RADAR was evaluated on (AvgAUC 0.8835) is the **MERLIN** dataset from the [Stanford AIMI Shared Datasets portal](https://stanfordaimi.azurewebsites.net/datasets/60b9c7ff-877b-48ce-96c3-0194c8205c40) (registration required). It ships radiologist reports and disease/finding labels; the repo includes RADAR's published results in `results/RADAR_infer_results_MerlinTestset.csv` and the reprocessing scripts under `ckpt/` (`transform_report_to_json.py`, `transform_label_to_json.py`). See `docs/INFERENCE.md` for the full external-evaluation workflow.
 
-### MERLIN subset evaluation (`RADAR_inference/merlin_subset_eval.py`)
-Reproduce the published AUCs on a sample of the MERLIN test split — no local DICOM export needed, and disk stays bounded:
+### MERLIN subset evaluation (`RADAR_inference/merlin_run.py`)
+**Full step-by-step guide: [`docs/MERLIN_RUNBOOK.md`](docs/MERLIN_RUNBOOK.md)** — download → readiness check → chunked scoring → computed-vs-published AUC table.
+
+One command, from the folder you downloaded from the portal:
+
+```bash
+python RADAR_inference/merlin_run.py --portal-dir ~/Downloads/merlinabdominalctdataset --check
+MODEL_ROOT=$PWD/ckpt CONFIGS_ROOT=$PWD/ckpt ROI_SIZE=64,192,288 \
+python RADAR_inference/merlin_run.py --portal-dir ~/Downloads/merlinabdominalctdataset --n 200 --chunk 50
+```
+
+It locates the portal files (nesting is fine), generates `ckpt/merlin_report.json` /
+`ckpt/merlin_labels.json` if missing, matches the official **test split**, scores a
+deterministic sample (resumable, memory-bounded chunks), and writes
+`results/merlin_subset/merlin_comparison.md` — computed vs published AUC per finding.
+
+The lower-level CLI (`merlin_subset_eval.py`) exposes the same stages separately:
 
 ```bash
 # 0) one-time: from the portal files, generate the two JSON inputs

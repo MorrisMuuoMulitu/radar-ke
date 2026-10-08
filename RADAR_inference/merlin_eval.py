@@ -228,3 +228,54 @@ def estimate(data_dir, n=None, seconds_per_case=SECONDS_PER_CASE):
         'bytes_selected': int(per_case * selected),
         'est_seconds': int(seconds_per_case * selected),
     }
+
+
+# ---------------------------------------------------------------------------
+# Portal ingestion: files downloaded from the Stanford AIMI MERLIN dataset.
+# ---------------------------------------------------------------------------
+
+def build_report_json(xlsx_path, out_path, columns=None):
+    """reports_final.xlsx -> merlin_report.json (same shape as ckpt/transform_report_to_json.py)."""
+    import pandas as pd
+    columns = columns or {'id': 'study id', 'report': 'Findings', 'split': 'Split', 'fewshot': 'Few Shot'}
+    frame = pd.read_excel(xlsx_path)
+    info = {}
+    for pid, report, split, fewshot in zip(frame[columns['id']], frame[columns['report']],
+                                           frame[columns['split']], frame[columns['fewshot']]):
+        report = '' if report is None else str(report)
+        marker = report.find('IMPRESSION:')
+        findings, impression = (report[:marker], report[marker:]) if marker != -1 else (report, '')
+        info.setdefault(str(pid), {'report': report, 'findings': findings,
+                                   'impression': impression, 'split': split, 'fewshot': fewshot})
+    Path(out_path).write_text(json.dumps(info, indent=4, ensure_ascii=False), encoding='utf-8')
+    return info
+
+
+def build_labels_json(csv_path, out_path):
+    """zero_shot_findings_disease_cls.csv -> merlin_labels.json (disease -> {pid: 0|1|-1})."""
+    import pandas as pd
+    frame = pd.read_csv(csv_path)
+    names = list(frame.columns)
+    ids = frame[names[0]]
+    labels = {disease: {str(ids[i]): int(frame[disease][i]) for i in range(len(ids))}
+              for disease in names[1:]}
+    Path(out_path).write_text(json.dumps(labels, ensure_ascii=False, indent=4), encoding='utf-8')
+    return labels
+
+
+def test_split_ids(report_info):
+    """Patient ids marked ``split: test`` in merlin_report.json."""
+    return sorted(pid for pid, info in report_info.items()
+                  if str(info.get('split', '')).strip().lower() == 'test')
+
+
+def find_volume_files(root, suffixes=('.nii.gz',)):
+    """Recursively locate CT volumes (the portal nests them in subfolders)."""
+    base = Path(root)
+    return sorted(p for p in base.rglob('*') if p.is_file() and p.name.endswith(suffixes))
+
+
+def match_volumes(patient_ids, volume_files):
+    """Map patient id -> volume path for ids that are present on disk."""
+    by_id = {patient_id(path.name): path for path in volume_files}
+    return {pid: by_id[pid] for pid in patient_ids if pid in by_id}
